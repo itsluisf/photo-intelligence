@@ -1,0 +1,20 @@
+# Photo Intelligence dependencies.
+#
+# Pinned to versions known to work — see docs/GOTCHAS.md.
+# In particular: ollama==0.4.7 (newer versions changed the response object API)
+# and Ollama (the server binary, not this Python package) should be 0.20.5.
+
+# Phase 2 — AI enrichment
+ollama==0.4.7
+
+# Phase 1 — image handling & EXIF
+pillow>=10.0.0
+tqdm>=4.65.0
+
+# Apple Vision framework (Phase 1, --skip-vision to disable)
+# macOS Apple Silicon only.
+pyobjc-framework-Vision>=10.0
+pyobjc-framework-Quartz>=10.0
+
+# Web UI
+Flask>=3.0.0

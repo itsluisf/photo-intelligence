@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Photo Intelligence — Phase 2 background worker for macOS launchd.
+
+  Setup:
+    1. Replace REPLACE_ME below with the absolute path to your repo clone.
+    2. Copy to ~/Library/LaunchAgents/com.photointelligence.phase2.plist
+    3. Load:    launchctl load ~/Library/LaunchAgents/com.photointelligence.phase2.plist
+    4. Status:  launchctl list | grep photointelligence
+    5. Stop:    launchctl unload ~/Library/LaunchAgents/com.photointelligence.phase2.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.photointelligence.phase2</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>REPLACE_ME/photo-intelligence/scripts/run_phase2.sh</string>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>REPLACE_ME/photo-intelligence/phase2.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>REPLACE_ME/photo-intelligence/phase2.log</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
