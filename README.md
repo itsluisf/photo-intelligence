@@ -255,3 +255,9 @@ photo-intelligence/
 ## License
 
 MIT — see [LICENSE](LICENSE).
+---
+
+## 🛠️ Built With
+* **Core Logic:** Python / SQLite
+* **AI Vision:** [Ollama](https://ollama.com/) + Gemma
+* **Development Assistant:** This project was developed in collaboration with **Claude Code**.
