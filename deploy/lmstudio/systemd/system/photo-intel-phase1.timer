@@ -1,0 +1,11 @@
+[Unit]
+Description=Photo Intel Phase 1 ingest (every 2h)
+Requires=photo-intel-phase1.service
+
+[Timer]
+OnCalendar=*-*-* 00/2:30:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

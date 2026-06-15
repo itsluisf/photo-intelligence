@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly photo-intel thumbnail pre-warm
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

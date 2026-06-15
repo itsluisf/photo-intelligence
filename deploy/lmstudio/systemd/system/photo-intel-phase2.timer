@@ -1,0 +1,14 @@
+[Unit]
+Description=Photo Intel Phase 2 Gemma enrichment (every 4h, 09:00-21:00)
+Requires=photo-intel-phase2.service
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+OnCalendar=*-*-* 13:00:00
+OnCalendar=*-*-* 17:00:00
+OnCalendar=*-*-* 21:00:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

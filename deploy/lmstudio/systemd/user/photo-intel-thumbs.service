@@ -1,0 +1,9 @@
+[Unit]
+Description=photo-intel thumbnail cache pre-warm
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/luis/photo-intel
+ExecStart=/home/luis/photo-intel/venv/bin/python /home/luis/photo-intel/photo_intel_thumbs.py
+Nice=10
+IOSchedulingClass=idle

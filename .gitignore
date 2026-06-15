@@ -1,5 +1,6 @@
-# User config
-config.ini
+# User config (use photo-intel.conf.example as your starting point)
+photo-intel.conf
+!deploy/**/*.conf
 
 # Databases & data
 *.db

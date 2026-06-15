@@ -1,0 +1,13 @@
+[Unit]
+Description=photo-intel Phase 2 Gemma enrichment
+After=network-online.target photo-intel-phase1.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=luis
+Group=luis
+WorkingDirectory=/home/luis/photo-intel
+ExecStart=/home/luis/photo-intel/venv/bin/python /home/luis/photo-intel/photo_intel_phase2.py
+Nice=10
+TimeoutStartSec=21600

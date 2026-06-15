@@ -1,0 +1,16 @@
+[Unit]
+Description=photo-intel web UI
+After=network.target
+
+[Service]
+Type=simple
+User=luis
+WorkingDirectory=/home/luis/photo-intel
+ExecStart=/home/luis/photo-intel/venv/bin/python /home/luis/photo-intel/photo_intel_web.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
