@@ -4,9 +4,9 @@ After=network.target
 
 [Service]
 Type=oneshot
-User=luis
-WorkingDirectory=/home/luis/photo-intel
-ExecStart=/usr/bin/python3 /home/luis/photo-intel/photo_intel_phase1.py --once
+User=youruser
+WorkingDirectory=/home/youruser/photo-intel
+ExecStart=/usr/bin/python3 /home/youruser/photo-intel/photo_intel_phase1.py --once
 StandardOutput=journal
 StandardError=journal
 

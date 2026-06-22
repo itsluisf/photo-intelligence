@@ -592,7 +592,7 @@ async function deleteSelected() {
   const uuids = Array.from(selectedUuids);
   if (!uuids.length) return;
   const confirmed = window.confirm(
-    `Permanently delete ${uuids.length} photo${uuids.length === 1 ? '' : 's'} from the server?\n\nThis removes the file and the database record. Apple Photos on minim2 is not affected.`
+    `Permanently delete ${uuids.length} photo${uuids.length === 1 ? '' : 's'} from the server?\n\nThis removes the file and the database record. Your Apple Photos library is not affected.`
   );
   if (!confirmed) return;
 

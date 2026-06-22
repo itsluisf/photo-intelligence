@@ -264,11 +264,12 @@ Verify, don't just assume:
 ## Step 8 — (Optional) Run it unattended
 
 Once the manual runs work, automate the cycle so the DB stays current with the
-library. The repo ships ready-made unit files under `deploy/` — **these are the
-author's exact paths/usernames and must be edited**, not copied verbatim:
+library. The repo ships ready-made unit files under `deploy/` with **placeholder
+paths and usernames (`youruser`, `/home/youruser`, `/your/media/drive`) that must
+be edited** for the user's machine before installing:
 
-- `deploy/minim2/launchd/` — macOS launchd plist for the export job.
-- `deploy/lmstudio/systemd/` — Linux systemd service+timer units for Phase 1,
+- `deploy/macos/launchd/` — macOS launchd plist for the export job.
+- `deploy/linux/systemd/` — Linux systemd service+timer units for Phase 1,
   Phase 2, the web app, and the nightly thumbnail pre-warm.
 
 Help the user adapt these to their paths/user, or just set up simple `cron`/launchd

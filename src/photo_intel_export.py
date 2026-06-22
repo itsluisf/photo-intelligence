@@ -180,7 +180,7 @@ def rsync_window(
     ssh_opts = f"ssh -i {ssh_key} -o StrictHostKeyChecking=no"
     # No --delete: the pipeline is additive-only. With it, an emptied
     # staging window (unmounted volume, manual clear) would mass-delete
-    # that window on lmstudio on the next scheduled run.
+    # that window on the processing host on the next scheduled run.
     cmd = [
         "rsync", "-av",
         "-e", ssh_opts,

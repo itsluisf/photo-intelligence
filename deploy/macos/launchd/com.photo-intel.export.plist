@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.luis.photo-intel-export</string>
+    <string>com.photo-intel.export</string>
     <key>ProgramArguments</key>
     <array>
         <string>/opt/homebrew/bin/python3.12</string>

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 photo_intel_phase1.py
-Polls dest_dir on lmstudio for osxphotos JSON sidecars and ingests them
-into photo-intel.db.  Runs continuously; safe to restart at any time.
+Polls dest_dir on the processing host for osxphotos JSON sidecars and
+ingests them into photo-intel.db.  Runs continuously; safe to restart at
+any time.
 
-Run on: lmstudio
+Run on: the processing host (same Mac in local mode; Linux/GPU box in split mode)
 Usage:
     python3 photo_intel_phase1.py [--config PATH] [--interval SECONDS] [--once]
 

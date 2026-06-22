@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=luis
-Group=luis
-WorkingDirectory=/home/luis/photo-intel
-ExecStart=/home/luis/photo-intel/venv/bin/python /home/luis/photo-intel/photo_intel_phase2.py
+User=youruser
+Group=youruser
+WorkingDirectory=/home/youruser/photo-intel
+ExecStart=/home/youruser/photo-intel/venv/bin/python /home/youruser/photo-intel/photo_intel_phase2.py
 Nice=10
 TimeoutStartSec=21600

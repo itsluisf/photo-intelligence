@@ -5,8 +5,8 @@ photo_intel_web.py — Local web UI for the photo-intel database.
 Runs on the processing host, beside photo-intel.db. Accessible from any
 device on the local network. Default URL: http://localhost:5052
 
-This is the photo-intel successor to the legacy photo_web.py (which ran on
-minim2 against photos_meta.db). Ported to the photo-intel schema:
+This is the photo-intel successor to the legacy photo_web.py (which ran
+against the photos_meta.db schema). Ported to the photo-intel schema:
 
   - Primary key is `uuid` (TEXT), not an integer `id`. All photo routes
     are keyed by uuid.
@@ -381,7 +381,7 @@ def search():
     if year_to:
         where.append("substr(date, 1, 4) <= ?")
         params.append(year_to)
-    # person may be comma-separated ("Staci Albisu,Luis Albisu") — every
+    # person may be comma-separated ("Jane Doe,John Doe") — every
     # named person must appear in the photo's persons array.
     for name in (n.strip() for n in person.split(",")):
         if name:

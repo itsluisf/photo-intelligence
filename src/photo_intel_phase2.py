@@ -3,10 +3,10 @@
 photo_intel_phase2.py — Phase 2: Gemma 4 enrichment for the photo-intel pipeline.
 
 Reads photo-intel.db (built by photo_intel_phase1.py from osxphotos sidecars),
-sends each still image to Gemma 4 via Ollama on lmstudio, and writes structured
-description / tags / location-guess back to the DB.
+sends each still image to Gemma 4 via Ollama on the processing host, and
+writes structured description / tags / location-guess back to the DB.
 
-Differences from the legacy phase2_gemma.py (minim2 / photos_meta.db):
+Differences from the legacy phase2_gemma.py (the Photos.sqlite-coupled pipeline):
   - Reads photo-intel.conf instead of CLI defaults.
   - Targets the photo-intel schema: uuid / media_type / phase2_processed
     (tri-state 0/1/-1) / gemma_* columns. No gemma_processed, no kind/uniform_type.

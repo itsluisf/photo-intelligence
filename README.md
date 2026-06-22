@@ -107,7 +107,7 @@ python3 src/photo_intel_export.py
 python3 src/photo_intel_export.py --window 2024
 ```
 
-Schedule with the provided launchd plist in `deploy/minim2/launchd/`.
+Schedule with the provided launchd plist in `deploy/macos/launchd/`.
 
 ### Phase 1 — ingest sidecars (processing host)
 
@@ -115,7 +115,7 @@ Schedule with the provided launchd plist in `deploy/minim2/launchd/`.
 python3 src/photo_intel_phase1.py --once
 ```
 
-Schedule with the systemd units in `deploy/lmstudio/systemd/`.
+Schedule with the systemd units in `deploy/linux/systemd/`.
 
 ### Phase 2 — AI enrichment (processing host)
 
