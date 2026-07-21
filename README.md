@@ -6,6 +6,58 @@ No cloud services. No API keys. Your photos stay on your hardware.
 
 ---
 
+## A side effect worth knowing about: your library stops being locked in
+
+Search is the point of this project, but there's a second thing you get for free.
+
+Apple Photos keeps your library in a `.photoslibrary` bundle backed by a
+private, undocumented SQLite schema. The photos are in there as real files, but
+the metadata that makes them *useful* — who's in them, where they were taken,
+what Apple's analyzer labelled them — is only reachable through Apple's own app.
+
+Because this pipeline exports with `--exiftool` and `--sidecar json`, what lands
+on the processing host is not just pixels:
+
+- **Metadata is written into the image files themselves.** Keywords, detected
+  persons, GPS coordinates and dates are embedded via exiftool. Point Lightroom,
+  Immich, digiKam or anything else at that directory and the metadata comes with
+  it — no import step, no conversion, no database.
+- **A JSON sidecar sits beside every file** carrying the fuller Photos metadata,
+  including album membership, for anything the EXIF fields can't express.
+- **Plain files in a plain directory tree**, organized `year/month`, one file per
+  asset. Live Photos keep both components. Videos are included.
+- **Nothing is ever deleted downstream.** The pipeline is additive by design, so
+  an accidental deletion in Apple Photos doesn't propagate.
+
+That makes the export a genuinely portable copy of your library rather than a
+derived cache — you could stop using this project tomorrow and the exported tree
+would still be worth having.
+
+### What it is not
+
+It is **not** a complete replacement for your Photos library, and you should not
+delete anything on the strength of it. Specifically:
+
+- **Edited versions are not exported.** The export uses `--skip-edited`, so you
+  get the *original* of every photo. Crops, exposure adjustments and retouching
+  live only in Apple Photos. On a real library this is not a rounding error — in
+  the setup this was built against, 14% of assets carry edits.
+- **Shared-album photos never leave the Mac** (`--not-shared`). This is a
+  deliberate privacy choice, but it means shared content is simply absent.
+- **Filenames are UUIDs and the tree is `year/month`.** Your album structure is
+  preserved in the sidecars, not in the directory layout, so another tool will
+  need to read those sidecars to reconstruct it.
+- **It is one copy on one disk.** A single exported tree is not a backup in any
+  3-2-1 sense. Back it up like you would any other data you care about.
+
+Those flags are tuned for feeding a vision model, where originals make more
+consistent inputs. If your priority is archival rather than search, drop
+`--skip-edited` in `photo_intel_export.py` — but note that osxphotos will then
+write both `{uuid}` and `{uuid}_edited` files, and Phase 1's `pick_for_index()`
+does not yet know how to disambiguate that pair.
+
+---
+
 ## How This Project Evolved
 
 The original version of this project was built around a simple observation: Apple Photos already does the hard work of organizing a library — faces, dates, albums, GPS — but that metadata is locked inside `Photos.sqlite`, a private schema Apple doesn't document or support for external reads. If you want to search your own library by description or scene content, you're stuck with whatever the Photos app gives you.
@@ -272,6 +324,10 @@ Generates missing 400px grid thumbnails in a multiprocessing pool. Idempotent; r
 **Never clear the staging directory.** It is the osxphotos `--update` anchor. Clearing it forces a full re-export of the entire library on the next run.
 
 **The staging volume must stay mounted.** The export script calls `assert_volume_mounted()` and aborts before touching anything if the volume is absent. A missing volume is a clean failure, not a silent full-reexport.
+
+**The export holds originals, not your edits.** `--skip-edited` means an edited
+photo exports as its unedited original. Don't treat the exported tree as a
+complete stand-in for the library — see *What it is not* above.
 
 **Live Photos export two files per UUID.** A `.heic` still and a `.mov` clip share the same UUID stem. The pipeline always selects the still via `pick_for_index()`. If thumbnails render blank, delete the stale `.thumb_cache/<uuid>_*.jpg` entry to force regeneration.
 

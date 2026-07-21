@@ -329,6 +329,12 @@ library slowly drifting out of sync with no backstop.
 - **The pipeline is additive-only.** Deleting a photo in Apple Photos does **not**
   remove it downstream — it lingers in staging, on the processing host, and in the
   DB. There's no auto-prune by design (Apple Photos is treated as a one-way source).
+- **The export is portable, but it is not a full library replacement.** Metadata is
+  written into the files via exiftool plus JSON sidecars, so the exported tree opens
+  cleanly in other photo tools — that's a genuine benefit worth mentioning to the
+  user. But it holds *originals*, not edited versions (`--skip-edited`), and excludes
+  shared albums. If the user asks whether they can drop Apple Photos once this runs,
+  the answer is no — say so directly rather than letting them assume otherwise.
 - **Shared-album photos stay on the Mac** (`--not-shared`). Don't disable that — and
   the web app's delete button only removes the *processing host's* copy, never Apple
   Photos.
