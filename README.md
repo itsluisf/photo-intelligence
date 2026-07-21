@@ -42,15 +42,62 @@ The legacy pipeline is preserved in `legacy/` for reference and for anyone runni
 
 ```
 Mac (Apple Photos library)
+  manifest_gate.py        — diff Photos.sqlite against a saved manifest,
+                            emit only changed UUIDs (~7 s for 200k assets)
   photo_intel_export.py   — osxphotos export, chunked by year → staging/
                             rsync staging/ → processing host (split mode)
 
 Processing host (Mac in local mode, or Linux/GPU in split mode)
   photo_intel_phase1.py   — ingest sidecar JSON → photo-intel.db
   photo_intel_phase2.py   — Gemma enrichment via Ollama → photo-intel.db
+  photo_intel_video.py    — Phase 2b: Qwen-VL video enrichment (optional)
   photo_intel_web.py      — Flask web app, port 5052
   photo_intel_thumbs.py   — nightly thumbnail pre-warm (optional)
 ```
+
+### The export gate
+
+A full osxphotos `--update` sweep loads the whole PhotosDB once per year
+window — over 5 minutes each, roughly 9 hours across 48 windows. Running that
+every 2 hours to catch a handful of new photos is almost entirely wasted work.
+
+`manifest_gate.py` reads `Photos.sqlite` directly (read-only, WAL-aware, no
+copy) and builds a manifest keyed on four signals per asset:
+
+```
+(ZMODIFICATIONDATE, face_n, computed_n, scene_n)
+```
+
+The last three are per-asset row counts from `ZDETECTEDFACE`,
+`ZCOMPUTEDASSETATTRIBUTES` and `ZSCENECLASSIFICATION` — the tables behind
+osxphotos's `--person-keyword`, `{searchinfo.activity}` and
+`{searchinfo.venue_type}` templates. A mod-date-only key is **not** sufficient:
+macOS's `photoanalysisd`/`mediaanalysisd` populate those tables asynchronously,
+long after the modification date settles, so a face or scene added by the
+analyzer changes what osxphotos would export while the mod-date stays frozen.
+
+Changed UUIDs are handed to `photo_intel_export.py --changed-file`, which
+exports exactly those assets via `--uuid-from-file`, one osxphotos pass per
+affected year window (typically 0–2) rather than all 48. The manifest is
+promoted to canonical **only** after a successful export, so a failed run
+retries rather than swallowing pending changes.
+
+The gate is deliberately over-inclusive — a false positive costs one harmless
+re-export, a false negative silently loses a photo. Deletions are ignored; the
+pipeline is additive.
+
+**A weekly full sweep remains the backstop.** `run_export_full.sh` runs the
+unchanged 48-window export to catch anything the gate structurally misses
+(export-db lag across a manifest reseed, analyzer backfills the changekey
+doesn't track) and doubles as a schema-drift detector — Apple moves the
+`Photos.sqlite` schema between macOS releases, and the gate fails loud when
+the tables it expects disappear. The two jobs share a lock file so they never
+run concurrent osxphotos passes against the same export DB.
+
+Validate the gate before trusting it. `manifest_gate.py --shadow` keeps its own
+baseline and logs what it *would* have flagged, without touching the pipeline —
+run it alongside the full sweep for a week and confirm its changed-set covers
+everything the sweep actually re-exported.
 
 ### Deployment modes
 
@@ -68,10 +115,16 @@ Set `mode = local` or `mode = split` in `photo-intel.conf`.
 - **Export host**: macOS with Apple Photos and [osxphotos](https://github.com/RhetTbull/osxphotos)
 - **Processing host**: Python 3.11+, [Ollama](https://ollama.com) with a Gemma 4 vision model
 - **Recommended model**: `gemma4:12b-it-q8_0` (GPU); `gemma4:e4b` works on CPU
+- **Video enrichment (optional)**: `ffmpeg`/`ffprobe` on PATH, plus a
+  vision-language model such as `qwen3-vl:8b`
 
 ```bash
 pip install -r requirements.txt
 ollama pull gemma4:12b-it-q8_0
+
+# optional, for Phase 2b video enrichment
+ollama pull qwen3-vl:8b
+sudo apt install ffmpeg        # macOS: brew install ffmpeg
 ```
 
 ---
@@ -93,7 +146,12 @@ Key settings:
 | `[paths] dest_dir` | Where exported photos land on the processing host |
 | `[paths] db_path` | SQLite database path on the processing host |
 | `[ollama] model` | Gemma model for Phase 2 enrichment and Smart Search |
+| `[video] model` | Vision-language model for Phase 2b video enrichment |
+| `[video] max_minutes` | Wall-clock stop for a video run — keep below the unit's `TimeoutStartSec` |
 | `[web] delete_token` | Shared secret for the photo-delete endpoint (blank to disable) |
+
+The `[video]` section is optional; omit it entirely if you only care about
+still images.
 
 ---
 
@@ -101,13 +159,40 @@ Key settings:
 
 ### Export (Mac)
 
+Day to day you run the gated launcher, which does the gate → export → promote
+sequence described above:
+
 ```bash
-python3 src/photo_intel_export.py
-# single year window only:
-python3 src/photo_intel_export.py --window 2024
+sh scripts/run_export.sh
 ```
 
-Schedule with the provided launchd plist in `deploy/macos/launchd/`.
+The underlying pieces, if you want to drive them by hand:
+
+```bash
+# full sweep, all year windows (this is what the weekly backstop runs)
+python3 src/photo_intel_export.py
+# single year window only
+python3 src/photo_intel_export.py --window 2024
+
+# what would the gate flag right now?
+python3 src/manifest_gate.py --changed-out /tmp/changed.tsv \
+                             --manifest-out /tmp/manifest.tsv
+# export just those
+python3 src/photo_intel_export.py --changed-file /tmp/changed.tsv
+```
+
+Schedule both jobs with the launchd plists in `deploy/macos/launchd/`:
+`com.photo-intel.export` (gated, every 2 h) and `com.photo-intel.export-full`
+(full sweep, weekly). The scripts in `scripts/` are expected to sit alongside
+the Python in your install directory — see the plists for the layout.
+
+**First run:** seed a baseline manifest before enabling the gated job,
+otherwise the first gated run flags your entire library:
+
+```bash
+python3 src/manifest_gate.py --manifest-out manifest/manifest.tsv \
+                             --changed-out /dev/null
+```
 
 ### Phase 1 — ingest sidecars (processing host)
 
@@ -124,6 +209,36 @@ python3 src/photo_intel_phase2.py
 # test run:
 python3 src/photo_intel_phase2.py --limit 10 --dry-run
 ```
+
+### Phase 2b — video enrichment (optional, processing host)
+
+Phase 2 handles still images only; it parks every video row at "skip".
+`photo_intel_video.py` fills that gap: it samples frames from each clip, sends
+the ordered frameset to a vision-language model (Qwen-VL) via Ollama, and
+writes the description, tags and location guess back into the **same** columns
+Phase 2 uses — so videos become searchable with no schema change and no web-app
+change.
+
+```bash
+python3 src/photo_intel_video.py
+# test batch:
+python3 src/photo_intel_video.py --limit 20 --dry-run
+```
+
+Requires `ffmpeg`/`ffprobe` on PATH and a `[video]` section in
+`photo-intel.conf`. Schedule with `photo-intel-video.{service,timer}` in
+`deploy/linux/systemd/system/`; check progress with `scripts/video_status.sh`.
+
+It runs as a separate script rather than a Phase 2 flag because the VLM has
+different VRAM behaviour and a different output profile than the Gemma model,
+and coupling them would risk the still-image JSON stability. On a single-GPU
+host the script unloads the Gemma model, runs, then warms Gemma back — always,
+including on failure — so the next Phase 2 run hits a warm model.
+
+Two settings are coupled: `[video] max_minutes` is a self-imposed wall-clock
+stop, and it **must** stay below `TimeoutStartSec` in the service unit. If
+systemd kills the run first it does so with SIGKILL, which skips the warm-back
+and leaves the unit failed. Change one, change the other.
 
 ### Web app
 
@@ -165,6 +280,24 @@ Generates missing 400px grid thumbnails in a multiprocessing pool. Idempotent; r
 **Smart Search has a runtime Ollama dependency.** If Ollama is unreachable or the model is loading, Smart Search falls back to a plain FTS5 keyword search automatically.
 
 **`format="json"` degenerates Gemma.** Under grammar-constrained decoding, Gemma enters a repeating-whitespace loop when it wants a grammar-disallowed token. Phase 2 and Smart Search both parse JSON tolerantly without the `format` constraint, with `repair_json_quotes()` as a fallback for unescaped interior quotes.
+
+**Seed the manifest before enabling the gated export.** With no baseline, the
+first gated run flags the entire library as changed and exports all of it. Run
+`manifest_gate.py --manifest-out manifest/manifest.tsv --changed-out /dev/null`
+once first. Re-seeding mid-life has the same trap in reverse: the export DB can
+lag the fresh manifest, which is one of the cases the weekly full sweep exists
+to catch.
+
+**Don't put `Requires=` on a systemd `.timer`.** A timer already triggers its
+matching service through the implicit `Unit=` on the schedule. Adding
+`Requires=` (or `Wants=`) to the timer's `[Unit]` *also* starts the service the
+moment the timer is started, enabled, or booted — so every edit-and-restart
+fires an unscheduled run. The units here deliberately omit it.
+
+**`[video] max_minutes` and `TimeoutStartSec` move together.** The video script
+self-stops at `max_minutes` and warms the Gemma model back in a `finally:`
+block. If the unit's `TimeoutStartSec` is lower, systemd SIGKILLs the run first
+— the warm-back never happens and the unit is left `failed (timeout)`.
 
 **macOS ulimit and exiftool.** Default macOS `ulimit -n` is 256. With `--exiftool`, osxphotos forks one exiftool process per photo and hits `Too many open files` at scale. Raise to `ulimit -n 4096` before running the export.
 

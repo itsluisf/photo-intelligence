@@ -1,0 +1,27 @@
+[Unit]
+Description=photo-intel Phase 2b Qwen-VL video enrichment
+After=network-online.target photo-intel-phase2.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=youruser
+Group=youruser
+WorkingDirectory=/home/youruser/photo-intel
+# The script handles its own VRAM swap (unload gemma → run Qwen-VL → warm gemma
+# back in a finally: block), so no ExecStartPre VRAM-freeing hook is needed.
+# ffmpeg/ffprobe must be on PATH.
+ExecStart=/home/youruser/photo-intel/venv/bin/python /home/youruser/photo-intel/photo_intel_video.py
+Nice=10
+# The script self-stops at its own [video] max_minutes deadline (640 min from
+# the 22:00 start => ~08:40, warms gemma back, exits 0). TimeoutStartSec MUST
+# sit above that, else systemd SIGKILLs the run first — which leaves the unit
+# `failed (timeout)`, cuts the nightly window short, and skips the gemma
+# warm-back (SIGKILL can't run the finally: block). 40800 = 11h20m, leaving
+# ~40 min of cushion above the self-stop.
+# THIS AND [video] max_minutes MUST MOVE TOGETHER.
+TimeoutStartSec=40800
+# If systemd ever does stop it (a genuinely hung run), give the SIGTERM handler
+# time to finish the in-flight clip and warm gemma back before SIGKILL — a
+# ~10 s stop window guarantees a hard kill mid-clip.
+TimeoutStopSec=300

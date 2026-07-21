@@ -102,6 +102,32 @@ num_predict      = 1024
 num_predict_retry = 2048
 request_timeout  = 180
 
+[video]
+# Phase 2b — video enrichment (photo_intel_video.py). Optional: omit this
+# whole section if you only care about still images. Requires ffmpeg/ffprobe
+# on PATH for frame extraction.
+#
+# Vision-language model used to describe clips. Runs on the same Ollama
+# endpoint as [ollama] above, but is a different model — the script unloads
+# the Phase 2 gemma model to free VRAM, runs, then warms gemma back.
+model              = qwen3-vl:8b
+# The model warmed back after the run (should match [ollama] model).
+gemma_model        = gemma4:12b-it-q8_0
+# Frames sampled per clip, evenly spaced, sent as one ordered frameset.
+frames             = 12
+# Clips shorter than this (seconds) are marked permanently skipped.
+min_duration       = 2.0
+num_ctx            = 32768
+num_predict        = 2048
+num_predict_retry  = 3072
+request_timeout    = 300
+# Holds the VLM in VRAM between clips so it is not reloaded per clip.
+keep_alive         = 15m
+# Self-imposed wall-clock stop, in minutes from start. Sized so the run always
+# ends and warms gemma back before the next scheduled Ollama job. MUST stay
+# below TimeoutStartSec in photo-intel-video.service — the two move together.
+max_minutes        = 640
+
 [web]
 # Shared secret for the photo-delete endpoint (POST /api/delete).
 # Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"

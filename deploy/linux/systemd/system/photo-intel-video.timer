@@ -1,0 +1,23 @@
+[Unit]
+Description=photo-intel Phase 2b Qwen-VL video enrichment (nightly 22:00)
+# No Requires=photo-intel-video.service here: a .timer already triggers its
+# matching .service via the implicit Unit= on the OnCalendar schedule. A
+# Requires= (or Wants=) on the timer's [Unit] additionally starts the service
+# the instant the timer itself is started/enabled/booted — not only on
+# schedule, which fires an unscheduled run every time you edit and restart
+# the timer.
+
+[Timer]
+# 22:00 — after the evening Phase 2 sweep, reclaiming the idle GPU hours that
+# otherwise sit between that sweep and the morning. The run ends ~08:40
+# against the 09:00 Phase 2 boundary.
+# NOTE: an evening start shares the GPU with any interactive image/video
+# generation — [video] keep_alive pins the VLM in VRAM while the run is active.
+OnCalendar=*-*-* 22:00:00
+# Persistent=false: no catch-up run on boot. A missed night is picked up by the
+# next night's run — the work queue is in the DB, not the timer.
+Persistent=false
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

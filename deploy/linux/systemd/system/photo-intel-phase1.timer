@@ -1,6 +1,11 @@
 [Unit]
 Description=Photo Intel Phase 1 ingest (every 2h)
-Requires=photo-intel-phase1.service
+# No Requires=photo-intel-phase1.service here: a .timer already triggers
+# its matching .service via the implicit Unit= on the OnCalendar schedule. A
+# Requires= (or Wants=) on the timer's [Unit] additionally starts the service
+# the instant the timer itself is started/enabled/booted — not only on
+# schedule, which fires an unscheduled run every time you edit and restart
+# the timer.
 
 [Timer]
 OnCalendar=*-*-* 00/2:30:00

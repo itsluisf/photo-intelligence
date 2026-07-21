@@ -15,15 +15,20 @@ A **local-first** AI search engine over the user's Apple Photos library. No clou
 API keys — every photo and every model stays on their hardware.
 
 ```
-Apple Photos  ──osxphotos export──▶  staging/  ──▶  Phase 1 (ingest sidecar JSON)
-                                                        │
-                                                        ▼
-                                              photo-intel.db  ◀── Phase 2 (Gemma
-                                                        │          vision model
-                                                        ▼          via Ollama:
-                                              Flask web app          descriptions,
-                                              (search, voice,        tags, OCR,
-                                               map, stats)           location guess)
+Apple Photos ──manifest gate──▶ osxphotos export ──▶ Phase 1 (ingest sidecars)
+             (only changed UUIDs)    staging/                │
+                                                             ▼
+                                            photo-intel.db  ◀── Phase 2 (Gemma
+                                                      │          vision model
+                                                      │          via Ollama:
+                                                      │          descriptions,
+                                                      │          tags, OCR,
+                                                      │          location guess)
+                                                      │
+                                                      │       ◀── Phase 2b (Qwen-VL
+                                                      ▼           video — optional)
+                                            Flask web app
+                                            (search, voice, map, stats)
 ```
 
 The end result is a web app (default port **5052**) with full-text search, an
@@ -202,6 +207,32 @@ What to expect:
 - **Safety rule baked in:** the export uses `--not-shared`, so shared-album photos
   never leave the Mac. Don't remove that flag.
 
+### Then seed the manifest gate
+
+The full sweep above reloads the whole PhotosDB once per year window — over 5
+minutes each, ~9 hours across all 48. That's fine for the initial export but far
+too slow to repeat on a schedule. The manifest gate reads `Photos.sqlite`
+directly (~7 s for 200k assets) and exports only what actually changed.
+
+After the first full export completes, seed the baseline:
+
+```bash
+mkdir -p ~/photo-intel/manifest
+python3 src/manifest_gate.py --config ~/photo-intel/photo-intel.conf \
+    --manifest-out ~/photo-intel/manifest/manifest.tsv \
+    --changed-out /dev/null
+```
+
+Skipping this step is the common mistake: with no baseline the first gated run
+flags the entire library and re-exports all of it. From here on the user runs
+`scripts/run_export.sh`, which gates, exports only changed UUIDs, and promotes
+the manifest only on success.
+
+Tell the user the weekly full sweep (`scripts/run_export_full.sh`, Step 8) is
+not optional — it's the backstop for anything the gate structurally misses, and
+it doubles as a schema-drift detector when Apple changes `Photos.sqlite` in a
+macOS release.
+
 ---
 
 ## Step 5 — Phase 1: ingest (processing host)
@@ -268,16 +299,25 @@ library. The repo ships ready-made unit files under `deploy/` with **placeholder
 paths and usernames (`youruser`, `/home/youruser`, `/your/media/drive`) that must
 be edited** for the user's machine before installing:
 
-- `deploy/macos/launchd/` — macOS launchd plist for the export job.
+- `deploy/macos/launchd/` — two plists: `com.photo-intel.export` (gated export,
+  every 2 h) and `com.photo-intel.export-full` (full sweep, weekly). They invoke
+  `run_export.sh` / `run_export_full.sh`, which are expected to sit alongside the
+  Python in the install directory.
 - `deploy/linux/systemd/` — Linux systemd service+timer units for Phase 1,
-  Phase 2, the web app, and the nightly thumbnail pre-warm.
+  Phase 2, Phase 2b video, the web app, and the nightly thumbnail pre-warm.
 
 Help the user adapt these to their paths/user, or just set up simple `cron`/launchd
-entries that call the three scripts on a schedule (export → phase1 → phase2, offset
+entries that call the scripts on a schedule (export → phase1 → phase2, offset
 so they don't overlap). The web app should run as a long-lived service.
 
-Recommended cadence to suggest: export + Phase 1 a few times a day; Phase 2 on a
-daytime window; web app always on; thumbnail pre-warm nightly.
+Recommended cadence to suggest: gated export + Phase 1 every couple of hours;
+full sweep weekly; Phase 2 on a daytime window; Phase 2b video overnight if the
+user enabled it; web app always on; thumbnail pre-warm nightly.
+
+**Both export jobs must be installed, not just the gated one.** They share a
+lock file so they never run concurrent osxphotos passes, and the weekly sweep is
+what catches whatever the gate misses. Installing the gated job alone leaves the
+library slowly drifting out of sync with no backstop.
 
 ---
 
@@ -299,6 +339,13 @@ daytime window; web app always on; thumbnail pre-warm nightly.
 - **Model swaps require care.** The defaults (`num_predict`, model name) are tuned
   for `gemma4:12b`. A different model may need different settings — validate output
   quality on a small batch first.
+- **Seed the manifest before enabling the gated export** (Step 4). Without a
+  baseline the first gated run flags the whole library.
+- **If they enable Phase 2b video:** `[video] max_minutes` and the service unit's
+  `TimeoutStartSec` are coupled — the script self-stops at `max_minutes` and warms
+  the Gemma model back on the way out, so if systemd's timeout is lower it SIGKILLs
+  the run, skips the warm-back, and leaves the unit failed. Change one, change the
+  other. Video enrichment also needs `ffmpeg`/`ffprobe` on PATH.
 
 ---
 

@@ -97,6 +97,20 @@ def window_dates(window: str) -> tuple[str, str]:
     return (f"{y:04d}-01-01", f"{y+1:04d}-01-01")
 
 
+def year_to_window(year: str, windows: list[str]) -> str | None:
+    """Map a manifest year string ('2024', '1975', 'unknown') to a configured
+    export window. Pre-1980 collapses to 'pre1980'. Returns None for years that
+    don't map to any configured window (e.g. 'unknown' / undated assets) — those
+    are left to the weekly full sweep, which is the gate's backstop anyway.
+    """
+    try:
+        y = int(year)
+    except (TypeError, ValueError):
+        return None
+    window = "pre1980" if y < 1980 else str(y)
+    return window if window in windows else None
+
+
 # ---------------------------------------------------------------------------
 # Export one year window
 # ---------------------------------------------------------------------------
@@ -106,10 +120,19 @@ def export_window(
     staging_dir: Path,
     exportdb: Path,
     dry_run: bool,
+    uuid_file: Path | None = None,
 ) -> bool:
     """
     Run osxphotos export for one year window into staging_dir.
     Returns True on success, False on failure.
+
+    If uuid_file is given, the export is scoped to exactly those UUIDs
+    (--uuid-from-file) — used by the manifest-gated incremental path so a
+    window with a handful of changed photos still produces the SAME staging
+    path layout (staging/<window>/<month>/<uuid>.ext) as the full sweep,
+    keeping osxphotos --update / the shared exportdb consistent across both
+    modes. The --from-date/--to-date bound is kept (redundant with the UUID
+    filter, but it preserves an identical invocation shape).
     """
     from_date, to_date = window_dates(window)
     window_staging = staging_dir / window
@@ -135,6 +158,8 @@ def export_window(
         "--to-date", to_date,
         "--verbose",
     ]
+    if uuid_file is not None:
+        cmd += ["--uuid-from-file", str(uuid_file)]
 
     log.info("Window %-8s  from %s to %s", window, from_date, to_date)
     log.info("Command: %s", shlex.join(cmd))
@@ -218,6 +243,83 @@ def clear_staging(window: str, staging_dir: Path, dry_run: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Manifest-gated incremental export
+# ---------------------------------------------------------------------------
+def run_gated(
+    changed_file: Path,
+    windows: list[str],
+    mode: str,
+    library: str,
+    staging_dir: Path,
+    exportdb: Path,
+    rsync_dest: str,
+    ssh_key: str,
+    dry_run: bool,
+) -> None:
+    """Export only the UUIDs in changed_file (TSV 'uuid<TAB>year'), grouping by
+    year window so each osxphotos invocation matches the full-sweep layout.
+
+    On any failure exits non-zero WITHOUT signalling success, so the calling
+    wrapper does not promote the pending manifest and the next run retries.
+    """
+    if not changed_file.exists():
+        log.error("Changed-file not found: %s", changed_file)
+        sys.exit(1)
+
+    by_window: dict[str, list[str]] = {}
+    skipped = 0
+    with changed_file.open() as fh:
+        for line in fh:
+            parts = line.rstrip("\n").split("\t")
+            if not parts or not parts[0]:
+                continue
+            uuid = parts[0]
+            year = parts[1] if len(parts) > 1 else "unknown"
+            window = year_to_window(year, windows)
+            if window is None:
+                skipped += 1
+                continue
+            by_window.setdefault(window, []).append(uuid)
+
+    if skipped:
+        log.warning("%d changed asset(s) had no mappable window (e.g. undated) "
+                    "— left to the weekly full sweep.", skipped)
+
+    if not by_window:
+        log.info("Gated: nothing to export.")
+        return
+
+    total = sum(len(v) for v in by_window.values())
+    log.info("Gated: %d changed asset(s) across %d window(s): %s",
+             total, len(by_window), ", ".join(sorted(by_window)))
+
+    # Per-window UUID lists live next to the exportdb (persistent, fast disk).
+    changed_dir = exportdb.parent / "changed"
+    changed_dir.mkdir(parents=True, exist_ok=True)
+
+    errors = []
+    for window in sorted(by_window):
+        uuid_file = changed_dir / f"{window}.txt"
+        uuid_file.write_text("\n".join(by_window[window]) + "\n")
+
+        ok = export_window(window, library, staging_dir, exportdb, dry_run,
+                            uuid_file=uuid_file)
+        if not ok:
+            errors.append(window)
+            continue
+
+        if mode == "split":
+            ok = rsync_window(window, staging_dir, rsync_dest, ssh_key, dry_run)
+            if not ok:
+                errors.append(window)
+
+    if errors:
+        log.error("Gated: failed window(s): %s", ", ".join(errors))
+        sys.exit(1)
+    log.info("Gated: all %d changed asset(s) exported.", total)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -226,6 +328,11 @@ def main() -> None:
                         help="Path to photo-intel.conf")
     parser.add_argument("--window",
                         help="Export only this window (e.g. '2024' or 'pre1980')")
+    parser.add_argument("--changed-file",
+                        help="Manifest-gated mode: TSV 'uuid<TAB>year' (from "
+                             "manifest_gate.py --changed-out). Exports only these "
+                             "UUIDs, one osxphotos pass per affected year window, "
+                             "instead of sweeping all 48 windows.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print commands without running them")
     args = parser.parse_args()
@@ -261,6 +368,17 @@ def main() -> None:
     # Ensure persistent dirs exist
     exportdb.parent.mkdir(parents=True, exist_ok=True)
     staging_dir.mkdir(parents=True, exist_ok=True)
+
+    # -----------------------------------------------------------------
+    # Manifest-gated incremental mode: export only the changed UUIDs,
+    # one osxphotos pass per affected year window (typically 0-2), not 48.
+    # -----------------------------------------------------------------
+    if args.changed_file:
+        run_gated(
+            Path(args.changed_file), parse_windows(cfg), mode,
+            library, staging_dir, exportdb, rsync_dest, ssh_key, args.dry_run,
+        )
+        return
 
     windows = [args.window] if args.window else parse_windows(cfg)
     if not windows:

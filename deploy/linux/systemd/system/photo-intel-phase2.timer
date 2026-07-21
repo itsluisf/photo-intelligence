@@ -1,6 +1,11 @@
 [Unit]
 Description=Photo Intel Phase 2 Gemma enrichment (every 4h, 09:00-21:00)
-Requires=photo-intel-phase2.service
+# No Requires=photo-intel-phase2.service here: a .timer already triggers
+# its matching .service via the implicit Unit= on the OnCalendar schedule. A
+# Requires= (or Wants=) on the timer's [Unit] additionally starts the service
+# the instant the timer itself is started/enabled/booted — not only on
+# schedule, which fires an unscheduled run every time you edit and restart
+# the timer.
 
 [Timer]
 OnCalendar=*-*-* 09:00:00

@@ -17,6 +17,16 @@ pillow-heif>=0.13.0      # HEIC/HEIF decoding on Linux (not needed on macOS)
 # Requires ollama>=0.6.x (object-style response API).
 ollama>=0.6.2
 
+# Phase 2b — video enrichment via Ollama (optional)
+# Uses the same `ollama` package as Phase 2. Additionally requires ffmpeg and
+# ffprobe on PATH for frame extraction — install via your package manager,
+# not pip:
+#   Linux:  sudo apt install ffmpeg
+#   macOS:  brew install ffmpeg
+
+# Export gate — manifest_gate.py reads Photos.sqlite directly through the
+# stdlib sqlite3 module. No extra dependency.
+
 # Web app
 Flask>=3.0.0
 waitress>=3.0.0          # production WSGI server (Flask dev server as fallback)
