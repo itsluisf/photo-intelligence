@@ -745,7 +745,7 @@ def smart_parse():
         "Rules:\n"
         "- persons: every person the request names, each copied as the\n"
         "  EXACTLY matching full name from the PEOPLE list. A first name\n"
-        "  alone (e.g. 'Ruby') counts as naming that person if exactly\n"
+        "  alone (e.g. 'Jane') counts as naming that person if exactly\n"
         "  one PEOPLE entry has that first name. If no PEOPLE entry\n"
         "  matches, omit that person. Use [] when nobody is named.\n"
         "- q: keep ALL descriptive words from the request — subject,\n"
@@ -770,10 +770,10 @@ def smart_parse():
         "- Never invent a person or scene not in the lists.\n\n"
         "Example: request 'show me yellow birds' ->\n"
         '  {"q": "yellow bird", "year": "", "year_from": "", "year_to": "", "persons": [], "scene": "", "terms": ["canary", "goldfinch", "warbler"]}\n'
-        "Example: request 'pictures of Ellie Storch at the park' ->\n"
-        '  {"q": "park", "year": "", "year_from": "", "year_to": "", "persons": ["Ellie Storch"], "scene": "park", "terms": ["playground", "picnic"]}\n'
-        "Example: request 'show me Ruby and Ellie in 2019' ->\n"
-        '  {"q": "", "year": "2019", "year_from": "", "year_to": "", "persons": ["Ruby Storch", "Ellie Storch"], "scene": "", "terms": []}\n'
+        "Example: request 'pictures of Jane Doe at the park' ->\n"
+        '  {"q": "park", "year": "", "year_from": "", "year_to": "", "persons": ["Jane Doe"], "scene": "park", "terms": ["playground", "picnic"]}\n'
+        "Example: request 'show me Jane and John in 2019' ->\n"
+        '  {"q": "", "year": "2019", "year_from": "", "year_to": "", "persons": ["Jane Doe", "John Doe"], "scene": "", "terms": []}\n'
         "Example: request 'beach photos from the early 90s' ->\n"
         '  {"q": "beach", "year": "", "year_from": "1990", "year_to": "1994", "persons": [], "scene": "ocean", "terms": ["shore", "sand", "seaside"]}\n'
         "Example: request 'birthday party' ->\n"
