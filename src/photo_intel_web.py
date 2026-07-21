@@ -460,7 +460,12 @@ def thumbnail(uuid):
     size = request.args.get("size", type=int) or THUMB_SIZE
     size = max(80, min(size, 1600))
     src  = lookup_path(uuid)
-    if src is None or not src.exists():
+    if src is None:
+        abort(404)
+    src = _sandboxed_path(src)
+    if src is None:
+        abort(403)
+    if not src.exists():
         abort(404)
     data = make_thumbnail(uuid, src, size)
     if not data:
@@ -469,20 +474,34 @@ def thumbnail(uuid):
                     headers={"Cache-Control": "public, max-age=86400"})
 
 
+def _sandboxed_path(src):
+    """Resolve `src` and confirm it sits inside DEST_DIR (the export tree).
+
+    Returns the resolved Path, or None if it escapes the sandbox or cannot be
+    resolved. Central guard for every route that reads or deletes a file by its
+    DB-stored path (`/original`, `/thumb`, `/api/delete`). The uuid in each
+    route is a DB key rather than a client-supplied path, so the first line of
+    defense is the ingest-side invariant that the file-path column only holds
+    paths inside DEST_DIR; this enforces that invariant in code, closing the
+    send_file/unlink path-trust FIXME.
+    """
+    try:
+        resolved = src.resolve(strict=False)
+    except OSError:
+        return None
+    if not resolved.is_relative_to(DEST_DIR.resolve()):
+        return None
+    return resolved
+
+
 @app.route("/original/<uuid>")
 def original(uuid):
     src = lookup_path(uuid)
     if src is None:
         abort(404)
-    # Sandbox check: the resolved path must sit inside dest_dir. The uuid is
-    # the DB key, not a path, but resolve-and-confirm anyway — this closes
-    # the security FIXME left open by the legacy /original route.
-    try:
-        resolved = src.resolve()
-        if not resolved.is_relative_to(DEST_DIR.resolve()):
-            abort(403)
-    except Exception:
-        abort(404)
+    resolved = _sandboxed_path(src)
+    if resolved is None:
+        abort(403)
     if not resolved.exists():
         abort(404)
     # conditional=True enables Range requests — required for <video> seek.
@@ -1037,9 +1056,13 @@ def delete_photos():
     for uuid in uuids:
         path = lookup_path(uuid)
         if path:
+            resolved = _sandboxed_path(path)
+            if resolved is None:
+                errors.append(f"{uuid}: refused (outside sandbox)")
+                continue
             try:
-                path.resolve().unlink()
-                deleted_files.append(str(path))
+                resolved.unlink()
+                deleted_files.append(str(resolved))
             except Exception as e:
                 errors.append(f"{uuid}: {e}")
         for thumb in THUMB_DIR.glob(f"{uuid}_*.jpg"):
