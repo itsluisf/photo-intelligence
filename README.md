@@ -351,6 +351,48 @@ re-geocodes later would never show up in an incremental.
 Photos with no GPS keep the old model guess as a fallback, so nothing is lost
 for the parts of a library that predate geotagging.
 
+#### Filling the gaps: `--nearby-fallback`
+
+`--apply` cannot place every GPS row, for two different reasons that look
+identical in the database:
+
+1. **The photo is no longer in the Photos library** — culled as a
+   near-duplicate, say. The dump reads the library, so there is nothing to
+   carry for it, while the exported file and its row live on.
+2. **The OS geotagged it but never reverse-geocoded it.** `osxphotos` returns
+   an empty place for these, and the dump correctly drops them.
+
+In both cases a neighbour usually knows the answer, because photos taken
+seconds apart at one spot are common and at least one normally carries a
+resolved place:
+
+```bash
+python3 src/photo_intel_places.py --config photo-intel.conf \
+    --apply /srv/photo-intel/places.json --nearby-fallback
+# widen if your library is sparse (default 100m):
+#   --nearby-radius 250
+```
+
+On the library this was built against it took the gap from 245 rows to 8 —
+the leftovers being places with nothing else photographed within 100m.
+
+Three properties worth preserving if you modify it:
+
+- **Borrowed rows are marked `place_source='nearby'`, never `'apple'`.** An
+  inferred place must not be mistaken for an authoritative one, and it makes
+  the whole thing undoable with a single `UPDATE … WHERE
+  place_source='nearby'`.
+- **It runs after `--apply`, never before**, so it only fills what is
+  genuinely still empty. Since `--apply` writes `place_source='apple'`
+  unconditionally, a row that later gets a real place overwrites the borrowed
+  one — the fallback can fill a hole but never hold one open.
+- **Keep the radius tight.** At a few hundred metres you start borrowing
+  across venue boundaries and confidently mislabelling; a handful of
+  unresolved rows is the better failure.
+
+No FTS rebuild is needed — the sync triggers fire on `UPDATE`, so borrowed
+rows are searchable immediately.
+
 ### Web app
 
 ```bash

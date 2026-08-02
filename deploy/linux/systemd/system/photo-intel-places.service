@@ -8,7 +8,7 @@ Type=oneshot
 User=youruser
 Group=youruser
 WorkingDirectory=/home/youruser/photo-intel
-ExecStart=/usr/bin/python3 /home/youruser/photo-intel/photo_intel_places.py --config /home/youruser/photo-intel/photo-intel.conf --apply /srv/photo-intel/places.json
+ExecStart=/usr/bin/python3 /home/youruser/photo-intel/photo_intel_places.py --config /home/youruser/photo-intel/photo-intel.conf --apply /srv/photo-intel/places.json --nearby-fallback
 StandardOutput=journal
 StandardError=journal
 

@@ -33,15 +33,16 @@ Usage:
     --dry-run works with every mode: reports counts, writes nothing.
 """
 
-# The export host's system python3 may be older than the processing host's
-# and evaluate annotations eagerly, so "str | None" would fail at def time
-# there. Deferring keeps one copy of this script runnable on both hosts.
+# the export host's system python3 may be older than the processing host's and evaluates annotations
+# eagerly, so "str | None" would fail at def time there. Deferring keeps one
+# copy of this script runnable on both hosts.
 from __future__ import annotations
 
 import argparse
 import configparser
 import json
 import logging
+import math
 import re
 import shutil
 import sqlite3
@@ -460,6 +461,108 @@ def run_backfill_video_gps(conn: sqlite3.Connection, dry_run: bool) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Mode: --nearby-fallback  (the processing host)
+# ---------------------------------------------------------------------------
+# Some rows have GPS but no place, and never will from --apply: the photo is
+# gone from the Photos library (culled as a near-duplicate, say), so the dump
+# has nothing to carry for it. Others are assets the OS geotagged but never
+# reverse-geocoded — it returns an empty place for them.
+#
+# In both cases a neighbour usually knows the answer. Photos taken seconds
+# apart at the same spot are common, and one of them typically does carry a
+# resolved place. This borrows from the nearest already-placed photo.
+#
+# Borrowed rows are marked place_source='nearby', NOT 'apple', so an inferred
+# place is never mistaken for an authoritative one. A later --apply that finds
+# a real place for the row overwrites it (run_apply writes place_source='apple'
+# unconditionally), so this can only ever fill a hole, never hold one open.
+
+# ~1.1 km per cell at the equator — comfortably larger than any sane radius,
+# so a 3x3 neighbourhood always contains every candidate.
+_GRID_DEG = 0.01
+_M_PER_DEG_LAT = 111_320.0
+
+
+def _cell(lat: float, lon: float) -> tuple:
+    return (int(lat // _GRID_DEG), int(lon // _GRID_DEG))
+
+
+def _metres(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Equirectangular approximation. Exact enough well under a kilometre,
+    which is the only range this is ever asked about."""
+    mean_lat = math.radians((lat1 + lat2) / 2.0)
+    dx = (lon2 - lon1) * math.cos(mean_lat) * _M_PER_DEG_LAT
+    dy = (lat2 - lat1) * _M_PER_DEG_LAT
+    return math.hypot(dx, dy)
+
+
+PLACE_FIELDS = ("place_name", "place_aoi", "place_city", "place_state",
+                "place_country", "place_country_code")
+
+
+def run_nearby_fallback(conn, radius_m: float = 100.0,
+                        dry_run: bool = False) -> dict:
+    """Fill place_* on GPS rows with no place from the nearest placed photo."""
+    placed = conn.execute(
+        "SELECT gps_lat, gps_lon, " + ", ".join(PLACE_FIELDS) + " "
+        "FROM photos "
+        "WHERE place_name IS NOT NULL AND place_name != '' "
+        "  AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL"
+    ).fetchall()
+
+    orphans = conn.execute(
+        "SELECT uuid, gps_lat, gps_lon FROM photos "
+        "WHERE (place_name IS NULL OR place_name = '') "
+        "  AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL"
+    ).fetchall()
+
+    log.info("Nearby fallback: %d rows need a place, %d placed rows to "
+             "borrow from (radius %.0f m)", len(orphans), len(placed), radius_m)
+    if not orphans or not placed:
+        return {"resolved": 0, "unresolved": len(orphans)}
+
+    grid = {}
+    for row in placed:
+        grid.setdefault(_cell(row["gps_lat"], row["gps_lon"]), []).append(row)
+
+    updates, unresolved = [], 0
+    for orph in orphans:
+        lat, lon = orph["gps_lat"], orph["gps_lon"]
+        cx, cy = _cell(lat, lon)
+        best, best_d = None, None
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for cand in grid.get((cx + dx, cy + dy), ()):
+                    d = _metres(lat, lon, cand["gps_lat"], cand["gps_lon"])
+                    if d <= radius_m and (best_d is None or d < best_d):
+                        best, best_d = cand, d
+        if best is None:
+            unresolved += 1
+            continue
+        updates.append((
+            *(best[f] for f in PLACE_FIELDS),
+            datetime.now(timezone.utc).isoformat(),
+            orph["uuid"],
+        ))
+
+    if dry_run:
+        log.info("[dry-run] would resolve %d rows from a neighbour "
+                 "(%d still unresolved)", len(updates), unresolved)
+        return {"resolved": len(updates), "unresolved": unresolved}
+
+    conn.executemany(
+        "UPDATE photos SET "
+        + ", ".join(f"{f}=?" for f in PLACE_FIELDS)
+        + ", place_source='nearby', place_updated_at=? WHERE uuid=?",
+        updates,
+    )
+    conn.commit()
+    log.info("Resolved %d rows from a neighbour (%d still unresolved)",
+             len(updates), unresolved)
+    return {"resolved": len(updates), "unresolved": unresolved}
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main() -> None:
@@ -478,14 +581,23 @@ def main() -> None:
                         help="the export host: with --dump, query only assets added in "
                              "the last DELTA (osxphotos TIME_DELTA, e.g. 5h) "
                              "and merge into the existing file")
+    parser.add_argument("--nearby-fallback", action="store_true",
+                        help="the processing host: fill rows that have GPS but "
+                             "no place from the nearest already-placed photo, "
+                             "marked place_source='nearby'")
+    parser.add_argument("--nearby-radius", type=float, default=100.0,
+                        metavar="M",
+                        help="max metres to borrow a place across "
+                             "(default 100)")
     parser.add_argument("--osxphotos", help="path to the osxphotos binary")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would change; write nothing")
     args = parser.parse_args()
 
-    if not any((args.dump, args.apply, args.backfill_video_gps, args.migrate)):
-        parser.error("pick a mode: --dump, --apply, --backfill-video-gps "
-                     "or --migrate")
+    if not any((args.dump, args.apply, args.backfill_video_gps, args.migrate,
+                args.nearby_fallback)):
+        parser.error("pick a mode: --dump, --apply, --backfill-video-gps, "
+                     "--nearby-fallback or --migrate")
     if args.added_in_last and not args.dump:
         parser.error("--added-in-last only applies to --dump")
 
@@ -504,12 +616,17 @@ def main() -> None:
 
     try:
         migrate(conn, args.dry_run)
-        if args.migrate and not (args.apply or args.backfill_video_gps):
+        if args.migrate and not (args.apply or args.backfill_video_gps
+                                 or args.nearby_fallback):
             return
         if args.backfill_video_gps:
             run_backfill_video_gps(conn, args.dry_run)
         if args.apply:
             run_apply(conn, Path(args.apply), args.dry_run)
+        # Always after --apply: authoritative places land first, so the
+        # fallback only ever fills what is genuinely still empty.
+        if args.nearby_fallback:
+            run_nearby_fallback(conn, args.nearby_radius, args.dry_run)
     finally:
         conn.close()
 
