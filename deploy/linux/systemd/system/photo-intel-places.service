@@ -1,0 +1,16 @@
+[Unit]
+Description=photo-intel place-name apply (Apple reverse geocode)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=youruser
+Group=youruser
+WorkingDirectory=/home/youruser/photo-intel
+ExecStart=/usr/bin/python3 /home/youruser/photo-intel/photo_intel_places.py --config /home/youruser/photo-intel/photo-intel.conf --apply /srv/photo-intel/places.json
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

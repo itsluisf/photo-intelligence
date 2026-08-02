@@ -1,0 +1,41 @@
+[Unit]
+Description=Photo Intel place-name apply (Apple reverse geocode)
+# No Requires=photo-intel-places.service here: a .timer already triggers its
+# matching .service via the implicit Unit= on the OnCalendar schedule. A
+# Requires= (or Wants=) on the timer's [Unit] additionally starts the service
+# the instant the timer itself is started/enabled/booted.
+
+[Timer]
+# One apply ~10 min ahead of each Phase 2 sweep, each reading a dump the Mac
+# shipped ~15 min earlier. Adjust to match your own sweep schedule; what
+# matters is the ORDER, not these exact times:
+#
+#   08:00 full dump   -> 08:50 apply -> 09:00 sweep
+#   12:30 incremental -> 12:45 apply -> 13:00 sweep
+#   16:30 incremental -> 16:45 apply -> 17:00 sweep
+#   20:30 incremental -> 20:45 apply -> 21:00 sweep
+#
+# Why chase the sweeps. A sweep that runs before its place data lands
+# describes photos from bare GPS and the model names the wrong place. The row
+# is never revisited once phase2_processed=1, so the bad description is
+# permanent and the GPU time that produced it is wasted. A once-daily apply
+# leaves whichever sweep runs first permanently ahead of its own data.
+#
+# Every apply is a full idempotent re-apply of the complete file (seconds,
+# even for a large library), because incremental dumps MERGE rather than
+# replacing. So any one of these covers for an earlier one that failed.
+#
+# If you also run Phase 2b video enrichment overnight, keep the first apply
+# clear of it. Phase 2b holds the model slot and writes per-clip; the database
+# is WAL so reads cannot block this write, but leave margin anyway — Phase 2b
+# tends to overrun its nominal stop by a few minutes.
+OnCalendar=*-*-* 08:50:00
+OnCalendar=*-*-* 12:45:00
+OnCalendar=*-*-* 16:45:00
+OnCalendar=*-*-* 20:45:00
+Persistent=true
+# Keep the jitter small: the first slot has a hard deadline at the sweep.
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

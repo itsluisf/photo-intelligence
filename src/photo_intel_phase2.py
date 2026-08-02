@@ -3,10 +3,10 @@
 photo_intel_phase2.py — Phase 2: Gemma 4 enrichment for the photo-intel pipeline.
 
 Reads photo-intel.db (built by photo_intel_phase1.py from osxphotos sidecars),
-sends each still image to Gemma 4 via Ollama on the processing host, and
-writes structured description / tags / location-guess back to the DB.
+sends each still image to Gemma 4 via Ollama on the processing host, and writes structured
+description / tags / location-guess back to the DB.
 
-Differences from the legacy phase2_gemma.py (the Photos.sqlite-coupled pipeline):
+Differences from the legacy phase2_gemma.py (photos_meta.db):
   - Reads photo-intel.conf instead of CLI defaults.
   - Targets the photo-intel schema: uuid / media_type / phase2_processed
     (tri-state 0/1/-1) / gemma_* columns. No gemma_processed, no kind/uniform_type.
@@ -69,6 +69,10 @@ import tempfile
 from pathlib import Path
 from datetime import datetime, timezone
 
+# Sibling module in this script's own directory — owns the place_* columns
+# and the one shared definition of how a place reads.
+from photo_intel_places import place_display
+
 try:
     import ollama as _ollama
 except ImportError:
@@ -121,7 +125,18 @@ def build_prompt(photo: dict) -> str:
     elif photo.get("date"):
         context_parts.append(f"Date taken: {photo['date']}")
 
-    if photo.get("gps_lat") is not None and photo.get("gps_lon") is not None:
+    # Prefer the OS reverse geocode over raw coordinates. Handing the model
+    # bare lat/lon and asking it to name the place is what produced a capital
+    # city's famous stadium, at "100% confidence", for a photo taken at a
+    # minor-league ballpark 50 miles away — a 12B model cannot do coordinate
+    # lookup from weights, and reports high confidence while failing at it.
+    place = place_display(photo)
+    if place:
+        context_parts.append(
+            f"Location (from the camera's geotag — authoritative, "
+            f"do not name a different place): {place}"
+        )
+    elif photo.get("gps_lat") is not None and photo.get("gps_lon") is not None:
         context_parts.append(
             f"GPS coordinates: {photo['gps_lat']:.4f}, {photo['gps_lon']:.4f}"
         )
@@ -321,6 +336,35 @@ def repair_json_quotes(raw: str) -> str:
     return ''.join(out)
 
 
+def _balanced_json_span(s: str) -> str | None:
+    """Return the first balanced {...} object in s, or None if none closes.
+    String-aware, so braces inside description text don't skew the depth
+    count. Kept identical to photo_intel_video._balanced_json_span."""
+    start = s.find("{")
+    if start == -1:
+        return None
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(s)):
+        c = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start:i + 1]
+    return None                  # never closed — a truncated reply
+
+
 def _extract_json(raw: str) -> str:
     """Pull the JSON object out of a raw model reply: strip code fences, then
     isolate the outermost {...}."""
@@ -335,6 +379,22 @@ def _extract_json(raw: str) -> str:
                 raw = part
                 break
     raw = raw.strip()
+
+    # Trailing content after a complete object ("Extra data: line 1 column
+    # 688") — the model finishes the JSON and keeps talking, or emits a second
+    # object. The first{..last} trim below never fired on these because the
+    # reply already starts with '{'. Only accept the balanced span when it
+    # actually parses, so every other reply shape reaches the caller's
+    # repair_json_quotes path byte-identically to before — in particular a
+    # truncated reply still surfaces as "Unterminated string" and still
+    # triggers the larger-budget retry. (2026-07-27)
+    span = _balanced_json_span(raw)
+    if span is not None and span != raw:
+        try:
+            json.loads(span)
+            return span
+        except json.JSONDecodeError:
+            pass
 
     if not raw.startswith("{"):
         first = raw.find("{")
@@ -439,7 +499,9 @@ def mark_videos_skipped(conn) -> int:
 def get_pending(conn, limit: int | None) -> list:
     """Return still-image rows that still need enrichment."""
     sql = ("SELECT uuid, media_type, file_ext, datetime_original, date, "
-           "       gps_lat, gps_lon, persons "
+           "       gps_lat, gps_lon, persons, "
+           "       place_name, place_aoi, place_city, place_state, "
+           "       place_country, place_country_code "
            "FROM photos "
            "WHERE phase2_processed = 0 AND media_type = 'image' "
            "ORDER BY date DESC")
@@ -448,35 +510,76 @@ def get_pending(conn, limit: int | None) -> list:
     return [dict(r) for r in conn.execute(sql).fetchall()]
 
 
+def _tag_str(val) -> str | None:
+    """Coerce one tag-ish element to a scalar string, or None to drop it.
+    A VLM sometimes emits tags/notable_features as objects ({"tag": "beach"})
+    or numbers rather than plain strings. An unhashable element reaching
+    dict.fromkeys() below aborts the whole run — that is exactly how Phase 2b
+    wedged on 2026-07-25. Kept identical to photo_intel_video._tag_str."""
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, str):
+        return val.strip() or None
+    if isinstance(val, (int, float)):
+        return str(val)
+    if isinstance(val, dict):
+        for key in ("tag", "name", "label", "value", "feature", "text"):
+            if key in val:
+                return _tag_str(val[key])
+        return None          # unrecognised object — drop, don't stringify it
+    return None
+
+
+def _tag_list(raw) -> list:
+    """Normalise a tags-ish field into a flat list of clean strings."""
+    if raw is None:
+        return []
+    if not isinstance(raw, (list, tuple)):
+        raw = [raw]
+    out = []
+    for item in raw:
+        if isinstance(item, (list, tuple)):      # nested list — flatten a level
+            out.extend(t for t in (_tag_str(x) for x in item) if t)
+        elif (t := _tag_str(item)):
+            out.append(t)
+    return out
+
+
 def flatten_result(gemma_data: dict) -> tuple:
     """Carried over from legacy update_photo(): flatten the rich JSON object
     into (description, tags_json, location_guess) so the output shape matches
-    the migrated legacy rows exactly."""
+    the migrated legacy rows exactly. Hardened 2026-07-26 against non-scalar
+    model output (see _tag_str); mirrors photo_intel_video.flatten_result minus
+    its 'video' provenance tag."""
     desc = gemma_data.get("description")
+    if desc is not None and not isinstance(desc, str):
+        desc = _tag_str(desc) or json.dumps(desc, ensure_ascii=False)
 
-    tags = gemma_data.get("tags", []) or []
-    all_tags = list(tags)
+    all_tags = _tag_list(gemma_data.get("tags"))
     for field in ("scene_type", "setting", "mood", "time_of_day", "weather"):
-        val = gemma_data.get(field)
+        val = _tag_str(gemma_data.get(field))
         if val and val not in ("other", "unknown", "indoor"):
             all_tags.append(val)
 
     people_info = gemma_data.get("people", {}) or {}
+    if not isinstance(people_info, dict):
+        people_info = {}
     try:
         people_count = int(str(people_info.get("count") or 0).split()[0])
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, IndexError):
         people_count = 0
     if people_count > 0:
         all_tags.append(f"people:{people_count}")
 
-    for feat in gemma_data.get("notable_features", []) or []:
-        all_tags.append(feat)
+    all_tags.extend(_tag_list(gemma_data.get("notable_features")))
 
     loc = gemma_data.get("estimated_location", {}) or {}
+    if not isinstance(loc, dict):
+        loc = {}
     loc_guess = None
-    parts = [p for p in (loc.get("specific_place"),
-                         loc.get("region_or_city"),
-                         loc.get("country")) if p]
+    parts = [p for p in (_tag_str(loc.get("specific_place")),
+                         _tag_str(loc.get("region_or_city")),
+                         _tag_str(loc.get("country"))) if p]
     if parts:
         conf = loc.get("confidence", 0) or 0
         try:
@@ -653,7 +756,16 @@ def main():
                   f"{reason} — left pending")
             continue
 
-        write_success(conn, uuid, result)
+        try:
+            write_success(conn, uuid, result)
+        except Exception as exc:
+            # Parseable JSON in an unexpected shape. Record and move on — one
+            # odd payload must not end the run (Phase 2b wedge, 2026-07-25).
+            stats["fail"] += 1
+            write_failure(conn, uuid, f"flatten/write failed: {exc!r}")
+            print(f"  [{i}/{len(pending)}] {uuid}  WRITE FAIL ({dt:.1f}s) "
+                  f"{exc!r} — left pending")
+            continue
         stats["ok"] += 1
         if i % 25 == 0 or i == len(pending):
             rate = (stats["ok"] + stats["fail"]) / max(time.time() - start, 1)

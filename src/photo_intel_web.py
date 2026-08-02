@@ -2,11 +2,11 @@
 """
 photo_intel_web.py — Local web UI for the photo-intel database.
 
-Runs on the processing host, beside photo-intel.db. Accessible from any
-device on the local network. Default URL: http://localhost:5052
+Runs on the processing host, beside photo-intel.db. Accessible from any device on the
+local network. Default URL: http://localhost:5052
 
-This is the photo-intel successor to the legacy photo_web.py (which ran
-against the photos_meta.db schema). Ported to the photo-intel schema:
+This is the photo-intel successor to the legacy photo_web.py (which ran on
+the export host against photos_meta.db). Ported to the photo-intel schema:
 
   - Primary key is `uuid` (TEXT), not an integer `id`. All photo routes
     are keyed by uuid.
@@ -44,9 +44,14 @@ import re
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, abort, Response
 from flask import render_template_string
+
+# Shared with Phase 2 / 2b so the place string a viewer reads is the same one
+# the VLM was told. Sibling module in this script's own directory.
+from photo_intel_places import place_display
 
 try:
     from PIL import Image, ImageOps
@@ -424,7 +429,10 @@ def search():
             "year"        : (r.get("date") or "")[:4],
             "scene"       : tags[0] if tags else None,
             "description" : clean_desc(r.get("gemma_description")),
-            "location"    : r.get("gemma_location_guess"),
+            # Apple's reverse geocode when we have it; the VLM's guess is
+            # only a fallback for assets with no GPS at all.
+            "location"    : place_display(r) or r.get("gemma_location_guess"),
+            "location_is_guess": place_display(r) is None,
             "tags"        : tags,
             "people"      : people,
             "has_file"    : lookup_path(uuid) is not None,
@@ -452,6 +460,8 @@ def photo_detail(uuid):
         if r.get(field):
             r[field] = parse_json_array(r[field])
     r["has_file"] = lookup_path(uuid) is not None
+    # Composed server-side so the modal and the result cards agree.
+    r["place_display"] = place_display(r)
     return jsonify(r)
 
 
@@ -1060,11 +1070,20 @@ def delete_photos():
             if resolved is None:
                 errors.append(f"{uuid}: refused (outside sandbox)")
                 continue
-            try:
-                resolved.unlink()
-                deleted_files.append(str(resolved))
-            except Exception as e:
-                errors.append(f"{uuid}: {e}")
+            # Remove every file for this uuid, not just the one the index
+            # picked: the sidecar (<name>.json) and any Live Photo .mov live
+            # beside it. Leaving the sidecar was the old bug — Phase 1 would
+            # re-ingest it and the "deleted" photo came back within ~2 h.
+            for sibling in sorted(resolved.parent.glob(f"{uuid}.*")):
+                sib = _sandboxed_path(sibling)
+                if sib is None:
+                    errors.append(f"{uuid}: refused (outside sandbox)")
+                    continue
+                try:
+                    sib.unlink()
+                    deleted_files.append(str(sib))
+                except Exception as e:
+                    errors.append(f"{uuid}: {e}")
         for thumb in THUMB_DIR.glob(f"{uuid}_*.jpg"):
             try:
                 thumb.unlink()
@@ -1072,6 +1091,16 @@ def delete_photos():
                 pass
 
     conn = get_write_db()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # Tombstone BEFORE dropping the row. The photo is still in Apple Photos, so
+    # staging keeps its copy and the next rsync re-delivers the file — the
+    # tombstone is what stops Phase 1 re-inserting a row for it, which is what
+    # actually keeps it out of the UI. Written first so that a crash between
+    # these two statements fails safe (a tombstone with its row still present
+    # is harmless; a dropped row with no tombstone resurrects).
+    conn.executemany(
+        "INSERT OR IGNORE INTO suppressed (uuid, at, reason) VALUES (?, ?, 'web-delete')",
+        [(u, now) for u in uuids])
     placeholders = ",".join("?" * len(uuids))
     conn.execute(f"DELETE FROM photos WHERE uuid IN ({placeholders})", uuids)
     conn.commit()
@@ -1081,7 +1110,8 @@ def delete_photos():
         for uuid in uuids:
             _file_index.pop(uuid, None)
 
-    return jsonify({"deleted": len(uuids), "files": deleted_files, "errors": errors})
+    return jsonify({"deleted": len(uuids), "files": deleted_files,
+                    "suppressed": len(uuids), "errors": errors})
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -1272,6 +1302,21 @@ def main():
     print(f"  Thumbs   : {THUMB_DIR}")
     if not HEIF_OK:
         print("  WARNING  : pillow-heif not installed — HEIC thumbnails will fail.")
+    # Tombstone table. Phase 1 owns the canonical definition (its SCHEMA runs
+    # on every open), but /api/delete must not fail just because this app
+    # happened to start first on a fresh database.
+    _c = get_write_db()
+    _c.execute("""CREATE TABLE IF NOT EXISTS suppressed (
+                      uuid   TEXT PRIMARY KEY,
+                      at     TEXT,
+                      reason TEXT
+                  )""")
+    _c.commit()
+    _n_sup = _c.execute("SELECT COUNT(*) FROM suppressed").fetchone()[0]
+    _c.close()
+    if _n_sup:
+        print(f"  Suppressed: {_n_sup} tombstoned uuid(s)")
+
     print("  Indexing photo files ...", flush=True)
 
     global _missing_uuids
@@ -1287,7 +1332,7 @@ def main():
     t = threading.Thread(target=refresh_index_loop, daemon=True)
     t.start()
 
-    print(f"  URL      : http://localhost:{args.port}")
+    print(f"  URL      : http://processing-host:{args.port}")
     print(f"  Local    : http://localhost:{args.port}")
     print("\nCtrl+C to stop\n")
 

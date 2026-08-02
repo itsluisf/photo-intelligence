@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.photo-intel.places-incr</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>/Users/youruser/photo-intel/run_places.sh</string>
+        <string>5h</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/youruser/photo-intel</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/youruser/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <!-- Incremental companion to com.photo-intel.places (full dump). Fires
+         before each of the day's remaining Phase 2 sweeps. Alignment is the
+         point: a sweep that runs before its place data lands describes photos
+         from bare GPS and the model names the wrong place, permanently,
+         because the row is never revisited once phase2_processed=1.
+
+         The 5h window against 4h-spaced sweeps gives an hour of overlap, so a
+         single skipped run cannot drop a photo. Records MERGE into the
+         existing places.json rather than replacing it, so every apply stays a
+         complete, idempotent re-apply.
+
+         ~70 s per run - library load dominates, so the same open costs ~60 s
+         whether one asset is queried or the whole library. Adjust the hours to
+         sit ~30 min
+         ahead of your own sweeps. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>12</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>16</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+    </array>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/youruser/photo-intel/places-launchd.err</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/youruser/photo-intel/places-launchd.err</string>
+</dict>
+</plist>

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.photo-intel.places</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>/Users/youruser/photo-intel/run_places.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/youruser/photo-intel</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/youruser/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <!-- Daily full dump. Must finish before the processing host applies the
+         file, which in turn must land before the Phase 2 sweep that will
+         consume the newly imported photos - see "Place names" in the README.
+         A few minutes over a large library, so an hour of headroom before the
+         apply is comfortable. StartCalendarInterval rather than the export
+         job's StartInterval: a full re-dump once a day is enough, because the
+         incremental companion job covers everything added during the day. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/youruser/photo-intel/places-launchd.err</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/youruser/photo-intel/places-launchd.err</string>
+</dict>
+</plist>

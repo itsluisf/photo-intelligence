@@ -14,14 +14,14 @@ WHY A SEPARATE SCRIPT (not a Phase 2 flag)
   Qwen-VL is a different model with different VRAM behaviour and a different
   output profile than the pinned gemma4:12b-it-q8_0. Coupling it into Phase 2
   would risk the hard-won still-image JSON stability. Instead this runs as its
-  own nightly timer, scheduled for the idle GPU window between the evening
-  Phase 2 run and the next morning's jobs, on the same VRAM-swap pattern used
-  elsewhere on the GPU host:
+  own nightly timer (01:00, when the GPU is idle — after the 21:00 Phase 2 run
+  and before another nightly Ollama job's 06:00-07:30 window), on the box's proven VRAM-swap
+  pattern (see forge-run.sh / free-ollama-vram.sh):
 
     1. unload the pinned gemma model to free VRAM
     2. load Qwen-VL, describe every pending clip (kept warm between clips)
     3. WARM GEMMA BACK before exit — always, even on failure (finally:) —
-       so the next morning's jobs and Phase 2 at 09:00 hit a warm model.
+       so that job at 06:00 and Phase 2 at 09:00 hit a warm model.
 
 STATE MACHINE (reuses phase2_processed on video rows; no new columns)
     -1 or 0  → pending (Phase 2 parks videos at -1; freshly-ingested at 0)
@@ -32,10 +32,10 @@ STATE MACHINE (reuses phase2_processed on video rows; no new columns)
   0→-1, and get_pending() selects images only), so these states are inert to it.
 
 VRAM / concurrency note (OLLAMA_MAX_LOADED_MODELS=1 + KEEP_ALIVE=-1)
-  With a single model slot, another gemma query fired mid-run would evict
+  With a single model slot, an interactive gemma query fired mid-run would evict
   Qwen-VL; our next frame call reloads it — thrash on the DDR3/PCIe path, not
-  breakage. The flock (one run at a time) plus the overnight window makes this
-  a non-issue in practice. keep_alive on the Qwen calls holds it loaded between
+  breakage. The flock (one run at a time) plus the 01:00 window makes this a
+  non-issue in practice. keep_alive on the Qwen calls holds it loaded between
   clips so it is not reloaded per clip.
 
 Usage:
@@ -62,6 +62,10 @@ import signal
 import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
+
+# Sibling module in this script's own directory — owns the place_* columns
+# and the one shared definition of how a place reads.
+from photo_intel_places import place_display
 
 # Set by SIGTERM (systemd stop / timeout) so the clip loop breaks cleanly and
 # the finally: block still warms gemma back — see the max_minutes note in main().
@@ -110,7 +114,16 @@ def build_prompt(row: dict, n_frames: int) -> str:
         context_parts.append(f"Date taken: {row['datetime_original']}")
     elif row.get("date"):
         context_parts.append(f"Date taken: {row['date']}")
-    if row.get("gps_lat") is not None and row.get("gps_lon") is not None:
+    # See the matching note in photo_intel_phase2.build_prompt. Until
+    # 2026-08-01 this branch never fired at all: video GPS was dropped at
+    # ingest (EXIF-only read, no QuickTime fallback), so every video row had
+    # gps_lat NULL and the model described clips with no location context.
+    place = place_display(row)
+    if place:
+        context_parts.append(
+            f"Location (from the camera's geotag — authoritative, "
+            f"do not name a different place): {place}")
+    elif row.get("gps_lat") is not None and row.get("gps_lon") is not None:
         context_parts.append(
             f"GPS coordinates: {row['gps_lat']:.4f}, {row['gps_lon']:.4f}")
     if row.get("persons"):
@@ -285,6 +298,35 @@ def repair_json_quotes(raw: str) -> str:
     return ''.join(out)
 
 
+def _balanced_json_span(s: str) -> str | None:
+    """Return the first balanced {...} object in s, or None if none closes.
+    String-aware, so braces inside description text don't skew the depth
+    count. Kept identical to photo_intel_phase2._balanced_json_span."""
+    start = s.find("{")
+    if start == -1:
+        return None
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(s)):
+        c = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start:i + 1]
+    return None                  # never closed — a truncated reply
+
+
 def _extract_json(raw: str) -> str:
     raw = (raw or "").strip()
     if "```" in raw:
@@ -296,6 +338,23 @@ def _extract_json(raw: str) -> str:
                 raw = part
                 break
     raw = raw.strip()
+
+    # Trailing content after a complete object ("Extra data: line 1 column
+    # 688") — the model finishes the JSON and keeps talking, or emits a second
+    # object. The first{..last} trim below never fired on these because the
+    # reply already starts with '{'. Only accept the balanced span when it
+    # actually parses, so every other reply shape reaches the caller's
+    # repair_json_quotes path byte-identically to before — in particular a
+    # truncated reply still surfaces as "Unterminated string" and still
+    # triggers the larger-budget retry. (2026-07-27)
+    span = _balanced_json_span(raw)
+    if span is not None and span != raw:
+        try:
+            json.loads(span)
+            return span
+        except json.JSONDecodeError:
+            pass
+
     if not raw.startswith("{"):
         first = raw.find("{")
         last = raw.rfind("}")
@@ -369,7 +428,9 @@ def call_vlm(client, model: str, prompt: str, frames: list[str],
 def get_pending(conn, limit: int | None) -> list:
     """Video rows not yet described (1) and not permanently skipped (2)."""
     sql = ("SELECT uuid, media_type, file_ext, datetime_original, date, "
-           "       gps_lat, gps_lon, persons "
+           "       gps_lat, gps_lon, persons, "
+           "       place_name, place_aoi, place_city, place_state, "
+           "       place_country, place_country_code "
            "FROM photos "
            "WHERE media_type = 'video' AND phase2_processed NOT IN (1, 2) "
            "ORDER BY date DESC")
@@ -378,37 +439,76 @@ def get_pending(conn, limit: int | None) -> list:
     return [dict(r) for r in conn.execute(sql).fetchall()]
 
 
+def _tag_str(val) -> str | None:
+    """Coerce one tag-ish element to a scalar string, or None to drop it.
+    qwen3-vl sometimes emits tags/notable_features as objects ({"tag": "beach"})
+    or numbers rather than plain strings. An unhashable element reaching
+    dict.fromkeys() below used to abort the whole nightly run (2026-07-25)."""
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, str):
+        return val.strip() or None
+    if isinstance(val, (int, float)):
+        return str(val)
+    if isinstance(val, dict):
+        for key in ("tag", "name", "label", "value", "feature", "text"):
+            if key in val:
+                return _tag_str(val[key])
+        return None          # unrecognised object — drop, don't stringify it
+    return None
+
+
+def _tag_list(raw) -> list:
+    """Normalise a tags-ish field into a flat list of clean strings."""
+    if raw is None:
+        return []
+    if not isinstance(raw, (list, tuple)):
+        raw = [raw]
+    out = []
+    for item in raw:
+        if isinstance(item, (list, tuple)):      # nested list — flatten a level
+            out.extend(t for t in (_tag_str(x) for x in item) if t)
+        elif (t := _tag_str(item)):
+            out.append(t)
+    return out
+
+
 def flatten_result(data: dict) -> tuple:
     """Flatten the rich JSON into (description, tags_json, location_guess).
-    Identical to photo_intel_phase2.flatten_result so video and still rows share
-    one output shape, with a 'video' provenance tag appended."""
+    Mirrors photo_intel_phase2.flatten_result so video and still rows share one
+    output shape, with a 'video' provenance tag appended — but unlike Phase 2 it
+    hardens every field against non-scalar VLM output (see _tag_str)."""
     desc = data.get("description")
+    if desc is not None and not isinstance(desc, str):
+        desc = _tag_str(desc) or json.dumps(desc, ensure_ascii=False)
 
-    tags = data.get("tags", []) or []
-    all_tags = list(tags)
+    all_tags = _tag_list(data.get("tags"))
     for field in ("scene_type", "setting", "mood", "time_of_day", "weather"):
-        val = data.get(field)
+        val = _tag_str(data.get(field))
         if val and val not in ("other", "unknown", "indoor"):
             all_tags.append(val)
 
     people_info = data.get("people", {}) or {}
+    if not isinstance(people_info, dict):
+        people_info = {}
     try:
         people_count = int(str(people_info.get("count") or 0).split()[0])
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, IndexError):
         people_count = 0
     if people_count > 0:
         all_tags.append(f"people:{people_count}")
 
-    for feat in data.get("notable_features", []) or []:
-        all_tags.append(feat)
+    all_tags.extend(_tag_list(data.get("notable_features")))
 
     all_tags.append("video")  # provenance: distinguishes VLM video rows
 
     loc = data.get("estimated_location", {}) or {}
+    if not isinstance(loc, dict):
+        loc = {}
     loc_guess = None
-    parts = [p for p in (loc.get("specific_place"),
-                         loc.get("region_or_city"),
-                         loc.get("country")) if p]
+    parts = [p for p in (_tag_str(loc.get("specific_place")),
+                         _tag_str(loc.get("region_or_city")),
+                         _tag_str(loc.get("country"))) if p]
     if parts:
         conf = loc.get("confidence", 0) or 0
         try:
@@ -508,10 +608,9 @@ def load_config(path: Path) -> dict:
         "num_predict_retry": cp.getint("video", "num_predict_retry",
                                        fallback=3072),
         "request_timeout": cp.getint("video", "request_timeout", fallback=300),
-        # Self-imposed wall-clock stop (minutes from start), so the run always
-        # ends and warms gemma back BEFORE any other scheduled Ollama job —
-        # otherwise the two contend for the single model slot. Must stay below
-        # the unit's TimeoutStartSec (see photo-intel-video.service).
+        # Self-imposed wall-clock stop (minutes from start). At the 01:00 timer
+        # this ends the run ~05:45, warming gemma back BEFORE another nightly
+        # Ollama job's 06:00-07:30 window, so the two never contend.
         "max_minutes": cp.getint("video", "max_minutes", fallback=285),
         "keep_alive": cp.get("video", "keep_alive", fallback="15m"),
     }
@@ -649,7 +748,16 @@ def main():
                       f"— will retry")
                 continue
 
-            write_success(conn, uuid, result)
+            try:
+                write_success(conn, uuid, result)
+            except Exception as exc:
+                # Parseable JSON in an unexpected shape. Record and move on —
+                # one odd payload must not end the night's window.
+                write_failure(conn, uuid, f"flatten/write failed: {exc!r}")
+                stats["fail"] += 1
+                print(f"  [{i}/{len(pending)}] {uuid}  WRITE FAIL ({dt:.1f}s) "
+                      f"{exc!r} — will retry")
+                continue
             stats["ok"] += 1
             print(f"  [{i}/{len(pending)}] {uuid}  ok ({dt:.1f}s, "
                   f"{len(frames)} frames)")

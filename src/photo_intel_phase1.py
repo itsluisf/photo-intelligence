@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
 photo_intel_phase1.py
-Polls dest_dir on the processing host for osxphotos JSON sidecars and
-ingests them into photo-intel.db.  Runs continuously; safe to restart at
-any time.
+Polls dest_dir on the processing host for osxphotos JSON sidecars and ingests them
+into photo-intel.db.  Runs continuously; safe to restart at any time.
 
-Run on: the processing host (same Mac in local mode; Linux/GPU box in split mode)
+Run on: the processing host
 Usage:
     python3 photo_intel_phase1.py [--config PATH] [--interval SECONDS] [--once]
 
@@ -73,6 +72,53 @@ QT_DATE_KEYS = (
     "QuickTime:CreateDate",         # UTC, no offset — last resort
 )
 
+# QuickTime GPS parsing for video sidecars — the same problem as the dates
+# above. Videos carry no EXIF, so the EXIF:GPSLatitude/Longitude read below
+# silently dropped the coordinates of every video in the library (12,978 rows
+# with gps_lat NULL, found 2026-08-01). Values here are already signed, so
+# there is no GPSLatitudeRef hemisphere correction to apply.
+QT_GPS_KEYS = ("Keys:GPSCoordinates", "UserData:GPSCoordinates")
+
+# "12.3456 -78.9012", optionally with a trailing altitude.
+QT_GPS_PLAIN_RE = re.compile(
+    r"^\s*([+-]?\d+(?:\.\d+)?)\s+([+-]?\d+(?:\.\d+)?)(?:\s+[+-]?\d+(?:\.\d+)?)?\s*$"
+)
+# ISO 6709: "+12.3456-078.9012+021.921/". Not present in this library's
+# sidecars, but accepting it costs nothing and avoids losing a future import
+# source the way the EXIF-only read did.
+QT_GPS_ISO6709_RE = re.compile(
+    r"^([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)(?:[+-]\d+(?:\.\d+)?)?/?$"
+)
+
+
+def parse_qt_gps(rec: dict):
+    """Pull (lat, lon) from a video sidecar's QuickTime GPS keys.
+
+    Returns None when absent or unparseable. Kept in sync with the copy in
+    photo_intel_places.py, which backfilled the pre-fix video rows.
+    """
+    for key in QT_GPS_KEYS:
+        raw = rec.get(key)
+        if not raw:
+            continue
+        text = str(raw).strip()
+
+        match = QT_GPS_PLAIN_RE.match(text) or QT_GPS_ISO6709_RE.match(text)
+        if not match:
+            continue
+
+        try:
+            lat, lon = float(match.group(1)), float(match.group(2))
+        except ValueError:
+            continue
+        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+            continue
+        # 0,0 is the null-island sentinel some cameras write for "no fix".
+        if lat == 0 and lon == 0:
+            continue
+        return lat, lon
+    return None
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -124,6 +170,18 @@ CREATE TABLE IF NOT EXISTS phase1_log (
     updated     INTEGER,
     skipped     INTEGER,
     errors      INTEGER
+);
+
+-- Tombstones for photos deleted from the web app. The pipeline is
+-- additive-only: staging still holds the file, rsync re-delivers it, and this
+-- ingest would re-insert the row on the next tick — so a delete without a
+-- tombstone silently reverts within ~2 h. A uuid listed here is never
+-- (re-)ingested and never shown. Cleared by photo_intel_reconcile.py once the
+-- photo is genuinely gone from Apple Photos, so this table stays small.
+CREATE TABLE IF NOT EXISTS suppressed (
+    uuid   TEXT PRIMARY KEY,
+    at     TEXT,                                -- ISO 8601, when suppressed
+    reason TEXT                                 -- free text, e.g. 'web-delete'
 );
 """
 
@@ -229,6 +287,15 @@ def parse_sidecar(json_path: Path) -> dict | None:
     if gps_lon is not None and gps_lon_ref == "W" and gps_lon > 0:
         gps_lon = -gps_lon
 
+    # Videos carry no EXIF; fall back to the QuickTime GPS keys. Mirrors the
+    # QT_DATE_KEYS fallback above.
+    if gps_lat is None or gps_lon is None:
+        qt_coords = parse_qt_gps(rec)
+        if qt_coords is not None:
+            gps_lat, gps_lon = qt_coords
+            gps_lat_ref = "N" if gps_lat >= 0 else "S"
+            gps_lon_ref = "E" if gps_lon >= 0 else "W"
+
     # --- people ---
     persons = rec.get("XMP:PersonInImage", [])
     if isinstance(persons, str):
@@ -283,6 +350,13 @@ def run_ingest(conn: sqlite3.Connection, dest_dir: Path) -> dict:
     json_files = sorted(dest_dir.rglob("*.json"))
     stats["files_seen"] = len(json_files)
 
+    # Tombstones, loaded once — the set is small and this runs per sidecar.
+    # Without it a web-app delete reverts on the next tick: staging still has
+    # the file, rsync re-delivers it, and the sidecar below re-inserts the row.
+    suppressed = {r[0] for r in conn.execute("SELECT uuid FROM suppressed")}
+    if suppressed:
+        log.info("%d suppressed uuid(s) will be skipped", len(suppressed))
+
     for json_path in json_files:
         # Skip exportdb and other non-sidecar JSON files
         if json_path.name.startswith("."):
@@ -297,6 +371,10 @@ def run_ingest(conn: sqlite3.Connection, dest_dir: Path) -> dict:
             continue
 
         uuid = m.group(1).upper()
+        if uuid in suppressed:
+            stats["skipped"] += 1
+            continue
+
         if already_ingested(conn, uuid):
             stats["skipped"] += 1
             continue
@@ -335,7 +413,16 @@ def run_ingest(conn: sqlite3.Connection, dest_dir: Path) -> dict:
                 )
                 ON CONFLICT(uuid) DO UPDATE SET
                     phase1_processed_at = excluded.phase1_processed_at,
-                    sidecar_path        = excluded.sidecar_path
+                    sidecar_path        = excluded.sidecar_path,
+                    -- Fill GPS only where it is currently NULL. COALESCE
+                    -- never overwrites a value we already have, so this is
+                    -- safe to run over the whole library, but it does let a
+                    -- parser fix like QT_GPS_KEYS repair existing rows on the
+                    -- next pass instead of needing a one-off backfill script.
+                    gps_lat     = COALESCE(photos.gps_lat,     excluded.gps_lat),
+                    gps_lon     = COALESCE(photos.gps_lon,     excluded.gps_lon),
+                    gps_lat_ref = COALESCE(photos.gps_lat_ref, excluded.gps_lat_ref),
+                    gps_lon_ref = COALESCE(photos.gps_lon_ref, excluded.gps_lon_ref)
             """, record)
             stats["inserted"] += 1
         except Exception as e:

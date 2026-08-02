@@ -292,6 +292,65 @@ stop, and it **must** stay below `TimeoutStartSec` in the service unit. If
 systemd kills the run first it does so with SIGKILL, which skips the warm-back
 and leaves the unit failed. Change one, change the other.
 
+### Place names (recommended)
+
+Phase 2 and 2b are handed the photo's GPS coordinates and asked, among other
+things, to name the place. They are bad at it. A ballpark 50 miles outside a
+capital city gets confidently labelled with the capital's famous stadium — at
+"100% confidence", because the model is guessing from a landmark it recognises
+rather than from the coordinates it was given.
+
+The OS already knows the answer. Apple Photos reverse-geocodes every asset and
+`osxphotos` exposes it, down to the venue (`place.name.area_of_interest`), so
+the fix is to stop asking the model and read the metadata:
+
+```bash
+# on the Mac — dump uuid -> place for the whole library, rsync to the host
+sh scripts/run_places.sh
+
+# incremental: only assets added in the last 5h, merged into the existing file
+sh scripts/run_places.sh 5h
+
+# on the processing host — write the place_* columns
+python3 src/photo_intel_places.py --config photo-intel.conf \
+    --apply /srv/photo-intel/places.json
+```
+
+This adds eight `place_*` columns. To make them searchable, `photos_fts` must
+be rebuilt — it is an external-content FTS5 table, so adding a column means
+drop + recreate + `'rebuild'` + recreate the three sync triggers. There is no
+`ALTER` for FTS5 columns:
+
+```bash
+sqlite3 photo-intel.db < migrations/2026-08-01-fts-add-place-name.sql
+```
+
+**Ordering is the part that bites.** A dump must land *before* the Phase 2
+sweep that will consume the newly imported photos. A sweep that runs first
+describes them from bare GPS, and because a row is never revisited once
+`phase2_processed = 1`, that wrong description is permanent — along with the
+GPU time that produced it. Run a dump ~30 min ahead of each sweep and an apply
+~10 min ahead; the shipped unit files show one such arrangement.
+
+Two rules that are easy to get wrong:
+
+- **Incremental dumps merge, they do not replace.** `--apply` is a full
+  re-apply of whatever file it is given, so a replacing incremental would
+  leave a failed earlier apply unrecoverable — the later file would hold only
+  that window's handful of photos. Merging keeps `places.json` complete, so
+  every apply is idempotent and any one covers for an earlier failure.
+- **Keep `places.json` out of a temp directory.** A merge whose base file has
+  been pruned silently produces a partial file, and rsync ships it over the
+  complete one. The database is safe either way (`--apply` only updates rows
+  it matches and never clears a place), but the fallback property is not.
+
+A daily full dump is still worth running alongside the incrementals:
+`--added-in-last` only sees newly *added* assets, so a photo the OS
+re-geocodes later would never show up in an incremental.
+
+Photos with no GPS keep the old model guess as a fallback, so nothing is lost
+for the parts of a library that predate geotagging.
+
 ### Web app
 
 ```bash

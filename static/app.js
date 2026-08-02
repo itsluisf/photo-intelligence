@@ -264,11 +264,15 @@ async function renderModal(uuid) {
       <div class="modal-desc">${esc(p.gemma_description)}</div>
     </div>` : ''}
 
-    ${p.gemma_location_guess ? `
+    ${p.place_display ? `
+    <div class="meta-section">
+      <div class="meta-label">Location</div>
+      <div class="meta-value">&#128205; ${esc(p.place_display)}</div>
+    </div>` : (p.gemma_location_guess ? `
     <div class="meta-section">
       <div class="meta-label">Location Guess</div>
       <div class="meta-value">&#128205; ${esc(p.gemma_location_guess)}</div>
-    </div>` : ''}
+    </div>` : '')}
 
     ${people.length ? `
     <div class="meta-section">
