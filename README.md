@@ -241,8 +241,17 @@ python3 src/photo_intel_export.py --changed-file /tmp/changed.tsv
 
 Schedule both jobs with the launchd plists in `deploy/macos/launchd/`:
 `com.photo-intel.export` (gated, every 2 h) and `com.photo-intel.export-full`
-(full sweep, weekly). The scripts in `scripts/` are expected to sit alongside
-the Python in your install directory — see the plists for the layout.
+(full sweep, weekly), plus `com.photo-intel.export-watchdog`, which alerts when
+the export stops running or wedges on its lock. The scripts in `scripts/` —
+including `photo_intel_lib.sh`, which the launchers source — are expected to sit
+alongside the Python in your install directory; see the plists for the layout.
+
+The shared `.export.lock` records its owner (`pid timestamp label`), and a
+launcher reclaims it when that process is gone. Earlier versions never did, so
+one hung or killed export blocked every later run until the lock was removed by
+hand. Set `PHOTO_INTEL_NOTIFY_CMD` in the watchdog plist to a script that
+delivers alerts (subject as `$1`, body on stdin); without it they only reach
+`watchdog.log`.
 
 **First run:** seed a baseline manifest before enabling the gated job,
 otherwise the first gated run flags your entire library:

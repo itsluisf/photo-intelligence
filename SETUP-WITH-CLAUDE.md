@@ -308,10 +308,15 @@ library. The repo ships ready-made unit files under `deploy/` with **placeholder
 paths and usernames (`youruser`, `/home/youruser`, `/your/media/drive`) that must
 be edited** for the user's machine before installing:
 
-- `deploy/macos/launchd/` — two plists: `com.photo-intel.export` (gated export,
-  every 2 h) and `com.photo-intel.export-full` (full sweep, weekly). They invoke
-  `run_export.sh` / `run_export_full.sh`, which are expected to sit alongside the
-  Python in the install directory.
+- `deploy/macos/launchd/` — the export plists: `com.photo-intel.export` (gated
+  export, every 2 h), `com.photo-intel.export-full` (full sweep, weekly) and
+  `com.photo-intel.export-watchdog` (every 2 h; alerts when the export stops
+  running or wedges on its lock). They invoke `run_export.sh`,
+  `run_export_full.sh` and `export_watchdog.sh`, which are expected to sit
+  alongside the Python **and `photo_intel_lib.sh`** in the install directory —
+  all three source it for the shared lock. Watchdog alerts go to
+  `watchdog.log` unless the user sets `PHOTO_INTEL_NOTIFY_CMD` in its plist to
+  a script that delivers them (ntfy, Pushover, sendmail on a host with an MTA…).
 - `deploy/linux/systemd/` — Linux systemd service+timer units for Phase 1,
   Phase 2, Phase 2b video, the web app, and the nightly thumbnail pre-warm.
 
@@ -325,7 +330,9 @@ user enabled it; web app always on; thumbnail pre-warm nightly.
 
 **Both export jobs must be installed, not just the gated one.** They share a
 lock file so they never run concurrent osxphotos passes, and the weekly sweep is
-what catches whatever the gate misses. Installing the gated job alone leaves the
+what catches whatever the gate misses. The lock records its owner and is
+reclaimed when that process is gone, so a crashed or killed export no longer
+blocks every later run. Installing the gated job alone leaves the
 library slowly drifting out of sync with no backstop.
 
 ---

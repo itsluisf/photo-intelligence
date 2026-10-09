@@ -25,12 +25,17 @@ LOG="export.log"
 MAXBYTES=$((50 * 1024 * 1024))   # rotate when export.log exceeds 50 MB
 KEEP=5                            # gzip archives to retain
 
-LOCK="$HOME/photo-intel/.export.lock"
-if ! mkdir "$LOCK" 2>/dev/null; then
-    echo "$(date -u +%FT%TZ) another export holds the lock; skipping gated run" >> "$LOG"
+. "$HOME/photo-intel/photo_intel_lib.sh"
+
+# Don't wait: the next tick is 2 h away and the manifest is not promoted on a
+# skip, so nothing is lost. lock_acquire reclaims a lock whose owner has died —
+# without that, a hung export left one behind and every later tick skipped on
+# it forever (see photo_intel_lib.sh, STALE LOCKS).
+if ! lock_acquire 0 run_export.sh; then
+    log_line "another export holds the lock; skipping gated run (owner: $(lock_owner))"
     exit 0
 fi
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+trap lock_release EXIT
 
 if [ -f "$LOG" ] && [ "$(stat -f%z "$LOG")" -gt "$MAXBYTES" ]; then
     rm -f "$LOG.$KEEP.gz"
@@ -42,6 +47,10 @@ if [ -f "$LOG" ] && [ "$(stat -f%z "$LOG")" -gt "$MAXBYTES" ]; then
     mv "$LOG" "$LOG.1"
     gzip "$LOG.1"
 fi
+
+# Marks the run as STARTED. A hung run otherwise writes nothing at all, leaving
+# no record of which run wedged or when — this line is that record.
+log_line "gated export starting (pid $$)"
 
 PY=/opt/homebrew/bin/python3.12
 mkdir -p manifest
