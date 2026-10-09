@@ -185,6 +185,83 @@ CREATE TABLE IF NOT EXISTS suppressed (
 );
 """
 
+# Columns the other scripts write that the CREATE TABLE above predates. Added
+# here, on every open, so a fresh install has the whole schema after its first
+# Phase 1 run and an older database is brought up to date in place. Each is
+# nullable, so ALTER never rewrites the table.
+#   phase2_error   — Phase 2 / 2b record why a photo failed or was skipped
+#   edited_fields  — the web editor's list of hand-corrected columns, which
+#                    Phase 2 / 2b leave alone
+#   place_*        — photo_intel_places.py (mirrors its PLACE_COLUMNS; its
+#                    --migrate adds the same columns and is a no-op after this)
+ADDED_COLUMNS = (
+    ("phase2_error",       "TEXT"),
+    ("edited_fields",      "TEXT"),
+    ("place_name",         "TEXT"),
+    ("place_aoi",          "TEXT"),
+    ("place_city",         "TEXT"),
+    ("place_state",        "TEXT"),
+    ("place_country",      "TEXT"),
+    ("place_country_code", "TEXT"),
+    ("place_source",       "TEXT"),
+    ("place_updated_at",   "TEXT"),
+)
+
+# Full-text index the web app searches. External-content FTS5 over `photos`,
+# kept in sync by triggers, so every writer's UPDATE reindexes for free. Same
+# definition as migrations/2026-08-01-fts-add-place-name.sql, which remains the
+# way to upgrade an index built before place_name existed; IF NOT EXISTS leaves
+# any existing index and triggers exactly as they are.
+FTS_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS photos_fts USING fts5(
+    uuid UNINDEXED,
+    gemma_description,
+    gemma_tags,
+    persons,
+    gemma_location_guess,
+    place_name,
+    content='photos',
+    content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS photos_fts_insert AFTER INSERT ON photos BEGIN
+    INSERT INTO photos_fts(rowid, uuid, gemma_description, gemma_tags, persons, gemma_location_guess, place_name)
+    VALUES (new.rowid, new.uuid, new.gemma_description, new.gemma_tags, new.persons, new.gemma_location_guess, new.place_name);
+END;
+
+CREATE TRIGGER IF NOT EXISTS photos_fts_update AFTER UPDATE ON photos BEGIN
+    INSERT INTO photos_fts(photos_fts, rowid, uuid, gemma_description, gemma_tags, persons, gemma_location_guess, place_name)
+    VALUES ('delete', old.rowid, old.uuid, old.gemma_description, old.gemma_tags, old.persons, old.gemma_location_guess, old.place_name);
+    INSERT INTO photos_fts(rowid, uuid, gemma_description, gemma_tags, persons, gemma_location_guess, place_name)
+    VALUES (new.rowid, new.uuid, new.gemma_description, new.gemma_tags, new.persons, new.gemma_location_guess, new.place_name);
+END;
+
+CREATE TRIGGER IF NOT EXISTS photos_fts_delete AFTER DELETE ON photos BEGIN
+    INSERT INTO photos_fts(photos_fts, rowid, uuid, gemma_description, gemma_tags, persons, gemma_location_guess, place_name)
+    VALUES ('delete', old.rowid, old.uuid, old.gemma_description, old.gemma_tags, old.persons, old.gemma_location_guess, old.place_name);
+END;
+"""
+
+
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    """Bring any database up to the full schema. Idempotent and cheap: two
+    PRAGMA/sqlite_master reads when nothing is missing."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(photos)")}
+    for col, coltype in ADDED_COLUMNS:
+        if col not in have:
+            conn.execute(f"ALTER TABLE photos ADD COLUMN {col} {coltype}")
+            log.info("schema: added column photos.%s", col)
+
+    had_fts = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='photos_fts'").fetchone()
+    conn.executescript(FTS_SCHEMA)
+    if not had_fts:
+        # A database ingested before the index existed: index what is there.
+        conn.execute("INSERT INTO photos_fts(photos_fts) VALUES('rebuild')")
+        log.info("schema: created photos_fts and indexed existing rows")
+    conn.commit()
+
+
 def open_db(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -192,6 +269,7 @@ def open_db(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
     conn.commit()
+    ensure_schema(conn)
     return conn
 
 

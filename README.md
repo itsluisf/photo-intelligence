@@ -331,10 +331,13 @@ python3 src/photo_intel_places.py --config photo-intel.conf \
     --apply /srv/photo-intel/places.json
 ```
 
-This adds eight `place_*` columns. To make them searchable, `photos_fts` must
-be rebuilt — it is an external-content FTS5 table, so adding a column means
-drop + recreate + `'rebuild'` + recreate the three sync triggers. There is no
-`ALTER` for FTS5 columns:
+Phase 1 creates the eight `place_*` columns and a `photos_fts` index that
+already covers `place_name`, so once the current Phase 1 has opened a database
+there is nothing more to do. Only a database whose `photos_fts` was built
+before `place_name` existed needs the index rebuilt — it is an
+external-content FTS5 table, so adding a column means drop + recreate +
+`'rebuild'` + recreate the three sync triggers. There is no `ALTER` for FTS5
+columns:
 
 ```bash
 sqlite3 photo-intel.db < migrations/2026-08-01-fts-add-place-name.sql
@@ -433,7 +436,7 @@ Generates missing 400px grid thumbnails in a multiprocessing pool. Idempotent; r
 - **Map** — clustered GPS markers (Leaflet + MarkerCluster). Click a cluster to browse photos from that location in a side panel.
 - **Video support** — videos appear in search results with ffmpeg-extracted poster thumbnails and stream in a `<video>` element with Range/seek support.
 - **Share** — a button in the photo view hands the photo to the OS share sheet (Messages, Mail, AirDrop, Save to Photos). Photos go out as an upright 2048-px JPEG — HEIC is converted, so non-Apple recipients can open it — named by date (`2019-08-24-175034.jpg`) instead of a uuid; videos go out as the original file. The share sheet needs a secure origin (HTTPS or `localhost`) and in practice a phone; elsewhere the button downloads the file instead.
-- **Edit** — correct a photo's date, people, AI description, tags or place from the photo view. Edits go to `photo-intel.db` only; Apple Photos and the exported files are never touched. Uses the same `[web] delete_token` as delete (no token configured = editing disabled). A typed place is marked `place_source='manual'` and `photo_intel_places.py --apply` leaves it alone; clear it to hand the photo back to the geocoder. Description and tags edited on a photo Phase 2 has not reached yet are replaced when Phase 2 gets to it.
+- **Edit** — correct a photo's date, people, AI description, tags or place from the photo view. Edits go to `photo-intel.db` only; Apple Photos and the exported files are never touched. Uses the same `[web] delete_token` as delete (no token configured = editing disabled). A typed place is marked `place_source='manual'` and `photo_intel_places.py --apply` leaves it alone; clear it to hand the photo back to the geocoder. Edited fields are recorded in `edited_fields`, and Phase 2 / 2b keep a hand-edited description or tags when they later enrich the photo.
 
 ---
 
