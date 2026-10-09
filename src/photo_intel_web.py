@@ -105,7 +105,10 @@ DEST_DIR  = None      # set in main()
 THUMB_DIR = None      # set in main(), = DEST_DIR/.thumb_cache
 OLLAMA_URL   = None   # set in main()
 OLLAMA_MODEL = None   # set in main()
-DELETE_TOKEN = None   # set in main(); empty disables /api/delete
+# One shared secret gates every mutating route (/api/delete, /api/photo/<uuid>/edit).
+# Set in main() from [web] delete_token — the config key kept its original name
+# from when delete was the only write. Empty disables all of them.
+WRITE_TOKEN = None
 
 # uuid -> Path index. Built at startup, refreshed by a background thread.
 _file_index      = {}
@@ -1117,9 +1120,9 @@ _UUID_RE = re.compile(r'^[0-9A-Fa-f\-]{8,36}$')
 def delete_photos():
     # Destructive endpoint — requires the shared secret from
     # photo-intel.conf [web] delete_token. Fail closed when unset.
-    if not DELETE_TOKEN:
+    if not WRITE_TOKEN:
         return jsonify({"error": "delete disabled: no delete_token configured"}), 403
-    if request.headers.get("X-Delete-Token", "") != DELETE_TOKEN:
+    if request.headers.get("X-Delete-Token", "") != WRITE_TOKEN:
         return jsonify({"error": "invalid or missing delete token"}), 403
 
     data  = request.get_json(silent=True) or {}
@@ -1182,6 +1185,170 @@ def delete_photos():
 
     return jsonify({"deleted": len(uuids), "files": deleted_files,
                     "suppressed": len(uuids), "errors": errors})
+
+
+# ─── manual metadata edit ──────────────────────────────────────────
+# Apple's face recognition, Gemma's descriptions and Apple's reverse geocode are
+# all wrong often enough to need a correction path, and without one the only
+# option is sqlite3 on the processing host. Every column this route writes was
+# checked against every other writer of `photos` first:
+#
+#   persons / gemma_tags / gemma_description
+#       Phase 1's upsert (ON CONFLICT DO UPDATE) sets only phase1_processed_at,
+#       sidecar_path and COALESCEd GPS — it never touches these. Phase 2 and
+#       Phase 2b write gemma_description / gemma_tags only for rows still at
+#       phase2_processed=0, i.e. not yet enriched. A row that already has a
+#       description is past that point, so an edit to it sticks. (Editing the
+#       description or tags of a photo Phase 2 has not reached yet is not
+#       protected: Phase 2 will write its own when it gets there.)
+#   date
+#       Nothing recomputes it after Phase 1's insert.
+#   place_*
+#       photo_intel_places.py --apply rewrites these for every uuid in Apple's
+#       dump EXCEPT place_source='manual', which this route sets. The nearby
+#       fallback only fills rows whose place_name is NULL/''.
+#
+# Any new machine writer over `photos` must leave hand-edited rows alone the
+# same way. The FTS triggers reindex on UPDATE, so search follows an edit with
+# no extra work here.
+_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+# Bounds exist so a stuck client can't write a novel into the FTS index.
+MAX_LIST_ITEMS = 60
+MAX_ITEM_CHARS = 120
+MAX_DESC_CHARS = 4000
+
+
+def _clean_str_list(value):
+    """Trim, drop blanks, de-dupe case-insensitively, keep first-seen order."""
+    if not isinstance(value, list):
+        raise ValueError("must be a list of strings")
+    out, seen = [], set()
+    for item in value[:MAX_LIST_ITEMS]:
+        if not isinstance(item, str):
+            raise ValueError("list items must be strings")
+        text = " ".join(item.split())[:MAX_ITEM_CHARS]
+        if text and text.lower() not in seen:
+            seen.add(text.lower())
+            out.append(text)
+    return out
+
+
+def _retimed_datetime_original(existing: str, new_date: str):
+    """Swap the date half of an ISO datetime_original, keeping time + offset.
+
+    Leaving it stale would put `date` and `datetime_original` in disagreement
+    for anything that reads the latter. Unparseable or absent values are left
+    alone rather than guessed at.
+    """
+    if not existing or not isinstance(existing, str) or len(existing) < 10:
+        return None
+    if not _DATE_RE.match(existing[:10]):
+        return None
+    return new_date + existing[10:]
+
+
+@app.route("/api/photo/<uuid>/edit", methods=["POST"])
+def edit_photo(uuid):
+    """Apply a partial metadata correction. Only the keys sent are written."""
+    if not WRITE_TOKEN:
+        return jsonify({"error": "editing disabled: no delete_token configured"}), 403
+    if request.headers.get("X-Edit-Token", "") != WRITE_TOKEN:
+        return jsonify({"error": "invalid or missing edit token"}), 403
+    if not _UUID_RE.match(uuid):
+        return jsonify({"error": "bad uuid"}), 400
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "json object required"}), 400
+
+    conn = get_db()
+    row  = conn.execute("SELECT * FROM photos WHERE uuid=?", (uuid,)).fetchone()
+    conn.close()
+    if not row:
+        abort(404)
+
+    sets, params, changed = [], [], []
+
+    try:
+        if "persons" in data:
+            names = _clean_str_list(data["persons"])
+            sets.append("persons = ?")
+            params.append(json.dumps(names))
+            changed.append("persons")
+
+        if "gemma_tags" in data:
+            tags = _clean_str_list(data["gemma_tags"])
+            sets.append("gemma_tags = ?")
+            params.append(json.dumps(tags))
+            changed.append("gemma_tags")
+
+        if "gemma_description" in data:
+            desc = data["gemma_description"]
+            if not isinstance(desc, str):
+                raise ValueError("gemma_description must be a string")
+            desc = desc.strip()[:MAX_DESC_CHARS]
+            sets.append("gemma_description = ?")
+            params.append(desc or None)
+            changed.append("gemma_description")
+
+        if "date" in data:
+            new_date = str(data["date"]).strip()
+            if not _DATE_RE.match(new_date):
+                raise ValueError("date must be YYYY-MM-DD")
+            try:
+                datetime.strptime(new_date, "%Y-%m-%d")
+            except ValueError:
+                raise ValueError(f"{new_date} is not a real date")
+            sets.append("date = ?")
+            params.append(new_date)
+            changed.append("date")
+            retimed = _retimed_datetime_original(row["datetime_original"], new_date)
+            if retimed:
+                sets.append("datetime_original = ?")
+                params.append(retimed)
+
+        if "place_name" in data:
+            if "place_source" not in row.keys():
+                raise ValueError("place editing needs the place columns — run "
+                                 "photo_intel_places.py --migrate first")
+            place = data["place_name"]
+            if not isinstance(place, str):
+                raise ValueError("place_name must be a string")
+            place = " ".join(place.split())[:MAX_ITEM_CHARS * 2]
+            # A typed place replaces the whole Apple breakdown rather than
+            # sitting on top of it — otherwise place_display() would compose
+            # the new name with the old city/state and read as a place that
+            # does not exist. Clearing it hands the row back to the geocoder.
+            sets.extend(["place_name = ?", "place_aoi = NULL", "place_city = NULL",
+                         "place_state = NULL", "place_country = NULL",
+                         "place_country_code = NULL", "place_source = ?",
+                         "place_updated_at = ?"])
+            params.extend([place or None, "manual" if place else None,
+                           datetime.now(timezone.utc).isoformat(timespec="seconds")])
+            changed.append("place_name")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    if not sets:
+        return jsonify({"error": "nothing to change"}), 400
+
+    conn = get_write_db()
+    conn.execute(f"UPDATE photos SET {', '.join(sets)} WHERE uuid = ?",
+                 params + [uuid])
+    conn.commit()
+    conn.close()
+
+    conn = get_db()
+    fresh = conn.execute("SELECT * FROM photos WHERE uuid=?", (uuid,)).fetchone()
+    conn.close()
+    out = dict(fresh)
+    for field in ("gemma_tags", "persons", "scene_labels", "face_regions"):
+        if out.get(field):
+            out[field] = parse_json_array(out[field])
+    out["has_file"]      = lookup_path(uuid) is not None
+    out["place_display"] = place_display(out)
+    return jsonify({"ok": True, "changed": changed, "photo": out})
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -1350,15 +1517,16 @@ def main():
 
     cfg = load_config(Path(args.config))
 
-    global DB_PATH, DEST_DIR, THUMB_DIR, OLLAMA_URL, OLLAMA_MODEL, DELETE_TOKEN
+    global DB_PATH, DEST_DIR, THUMB_DIR, OLLAMA_URL, OLLAMA_MODEL, WRITE_TOKEN
     DB_PATH  = args.db   or cfg["db_path"]
     DEST_DIR = Path(args.dest or cfg["dest_dir"]).resolve()
     THUMB_DIR = DEST_DIR / ".thumb_cache"
     OLLAMA_URL   = cfg["ollama_url"]
     OLLAMA_MODEL = cfg["ollama_model"]
-    DELETE_TOKEN = cfg["delete_token"]
-    if not DELETE_TOKEN:
-        print("  WARNING  : no [web] delete_token in config — photo delete is disabled.")
+    WRITE_TOKEN = cfg["delete_token"]
+    if not WRITE_TOKEN:
+        print("  WARNING  : no [web] delete_token in config — photo delete "
+              "and metadata editing are disabled.")
 
     if not Path(DB_PATH).exists():
         raise SystemExit(f"ERROR: database not found: {DB_PATH}")

@@ -238,6 +238,7 @@ async function renderModal(uuid) {
   const info  = document.getElementById('modalInfo');
   stopModalVideo();
   img.src = `/thumb/${uuid}?size=800`;
+  editDraft = null;          // a new photo means any open form is done with
   info.innerHTML = '<div class="loading">Loading</div>';
   modal.classList.add('open');
 
@@ -248,6 +249,16 @@ async function renderModal(uuid) {
     vid.src = `/original/${uuid}`;
     vid.style.display = '';
   }
+  renderModalView(p);
+}
+
+// The photo the modal is showing, as returned by /api/photo/<uuid>. The editor
+// builds its form from this rather than refetching.
+let modalPhoto = null;
+
+function renderModalView(p) {
+  modalPhoto = p;
+  const info   = document.getElementById('modalInfo');
   const people = Array.isArray(p.persons) ? p.persons : [];
   const tags   = Array.isArray(p.gemma_tags) ? p.gemma_tags : [];
   const scenes = Array.isArray(p.scene_labels) ? p.scene_labels : [];
@@ -298,15 +309,229 @@ async function renderModal(uuid) {
       <div class="meta-value">${Number(p.gps_lat).toFixed(4)}, ${Number(p.gps_lon).toFixed(4)}</div>
     </div>` : ''}
 
-    ${p.has_file ? `
-    <div class="meta-section modal-actions">
-      <button class="share-btn" onclick="sharePhoto('${p.uuid}', this)">&#8593; Share</button>
-      <a class="map-popup-open" href="/original/${p.uuid}" target="_blank">Open original &rarr;</a>
-    </div>` : `
+    ${p.has_file ? '' : `
     <div class="meta-section">
       <div class="meta-value" style="color:var(--red)">&#9888; No local file found for this photo</div>
     </div>`}
+    <div class="meta-section modal-actions">
+      ${p.has_file ? `
+      <button class="share-btn" onclick="sharePhoto('${p.uuid}', this)">&#8593; Share</button>
+      <a class="map-popup-open" href="/original/${p.uuid}" target="_blank">Open original &rarr;</a>` : ''}
+      <button class="edit-btn" onclick="openModalEditor()">&#9998; Edit</button>
+    </div>
   `;
+}
+
+// ── Metadata editor ─────────────────────────────────────────────────────────
+// Corrects what the pipeline got wrong: Apple's face recognition names the
+// wrong people, Gemma writes a description of a photo it misread, a scan
+// carries the date it was digitised, a place is a nearby-borrow rather than
+// the real one.
+//
+// Everything here writes to photo-intel.db only — your Apple Photos library is
+// never touched, and neither are the exported files. See the /api/photo/
+// <uuid>/edit comment block for why each column is safe to hand-edit against
+// the scheduled writers.
+
+// Working copy, live only while the form is open. Discarded on Cancel.
+let editDraft = null;
+
+function openModalEditor() {
+  if (!modalPhoto) return;
+  const p = modalPhoto;
+  editDraft = {
+    persons: [...(Array.isArray(p.persons) ? p.persons : [])],
+    tags:    [...(Array.isArray(p.gemma_tags) ? p.gemma_tags : [])],
+  };
+  renderModalEditor();
+}
+
+function cancelModalEditor() {
+  editDraft = null;
+  renderModalView(modalPhoto);
+}
+
+function chipRow(kind, values) {
+  return values.map((v, i) =>
+    `<span class="edit-chip">${esc(v)}<button type="button" title="Remove"
+       onclick="editChipRemove('${kind}', ${i})">&#215;</button></span>`).join('');
+}
+
+function editChipRemove(kind, i) {
+  editDraft[kind].splice(i, 1);
+  document.getElementById(`edit-${kind}-chips`).innerHTML =
+    chipRow(kind, editDraft[kind]);
+}
+
+function editChipAdd(kind, input) {
+  // Commas split, so pasting "Jane Doe, John Doe" adds two.
+  const added = input.value.split(',').map(s => s.trim()).filter(Boolean);
+  if (!added.length) return;
+  const seen = new Set(editDraft[kind].map(v => v.toLowerCase()));
+  added.forEach(v => {
+    if (!seen.has(v.toLowerCase())) { seen.add(v.toLowerCase()); editDraft[kind].push(v); }
+  });
+  input.value = '';
+  document.getElementById(`edit-${kind}-chips`).innerHTML =
+    chipRow(kind, editDraft[kind]);
+}
+
+function editChipKey(e, kind) {
+  if (e.key === 'Enter' || e.key === ',') {
+    e.preventDefault();
+    editChipAdd(kind, e.target);
+  }
+}
+
+function renderModalEditor() {
+  const p    = modalPhoto;
+  const info = document.getElementById('modalInfo');
+
+  info.innerHTML = `
+    <div class="modal-actions">
+      <button class="share-btn" onclick="saveModalEdit(this)">&#10003; Save</button>
+      <button class="edit-cancel-btn" onclick="cancelModalEditor()">Cancel</button>
+    </div>
+    <div class="edit-status" id="editStatus"></div>
+
+    <div class="meta-section">
+      <div class="meta-label">Date</div>
+      <input class="edit-input" id="edit-date" type="date" value="${esc(p.date || '')}">
+    </div>
+
+    <div class="meta-section">
+      <div class="meta-label">People</div>
+      <div class="edit-chips" id="edit-persons-chips">${chipRow('persons', editDraft.persons)}</div>
+      <input class="edit-input" id="edit-persons-input"
+             autocomplete="off" placeholder="Add a person, then Enter"
+             onkeydown="editChipKey(event, 'persons')"
+             onblur="editChipAdd('persons', this)">
+    </div>
+
+    <div class="meta-section">
+      <div class="meta-label">AI Description</div>
+      <textarea class="edit-input edit-textarea" id="edit-desc"
+                placeholder="No description">${esc(p.gemma_description || '')}</textarea>
+    </div>
+
+    <div class="meta-section">
+      <div class="meta-label">Tags</div>
+      <div class="edit-chips" id="edit-tags-chips">${chipRow('tags', editDraft.tags)}</div>
+      <input class="edit-input" id="edit-tags-input" autocomplete="off"
+             placeholder="Add a tag, then Enter"
+             onkeydown="editChipKey(event, 'tags')"
+             onblur="editChipAdd('tags', this)">
+    </div>
+
+    <div class="meta-section">
+      <div class="meta-label">Location</div>
+      <input class="edit-input" id="edit-place" value="${esc(p.place_display || '')}"
+             placeholder="No location">
+      <div class="edit-hint">Replaces Apple's place for this photo and is kept
+        from being overwritten by the next places run. Clear it to hand the
+        photo back to the geocoder.</div>
+    </div>
+  `;
+}
+
+// Only fields the user actually changed are sent, so an untouched row is never
+// rewritten (and place_source is never flipped to 'manual' by simply opening
+// the form and saving).
+function buildEditPayload() {
+  const p = modalPhoto;
+  const body = {};
+
+  const date = document.getElementById('edit-date').value.trim();
+  if (date && date !== (p.date || '')) body.date = date;
+
+  const desc = document.getElementById('edit-desc').value.trim();
+  if (desc !== (p.gemma_description || '').trim()) body.gemma_description = desc;
+
+  const place = document.getElementById('edit-place').value.trim();
+  if (place !== (p.place_display || '').trim()) body.place_name = place;
+
+  const sameList = (a, b) =>
+    a.length === b.length && a.every((v, i) => v === b[i]);
+  if (!sameList(editDraft.persons, Array.isArray(p.persons) ? p.persons : []))
+    body.persons = editDraft.persons;
+  if (!sameList(editDraft.tags, Array.isArray(p.gemma_tags) ? p.gemma_tags : []))
+    body.gemma_tags = editDraft.tags;
+
+  return body;
+}
+
+async function saveModalEdit(btn) {
+  // A blur-committed chip can still be in the input when Save is clicked.
+  ['persons', 'tags'].forEach(kind => {
+    const el = document.getElementById(`edit-${kind}-input`);
+    if (el && el.value.trim()) editChipAdd(kind, el);
+  });
+
+  const body = buildEditPayload();
+  if (!Object.keys(body).length) { cancelModalEditor(); return; }
+
+  // Same shared secret as delete ([web] delete_token).
+  const token = getDeleteToken();
+  if (!token) return;
+
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = 'Saving&hellip;';
+  const status = document.getElementById('editStatus');
+
+  const send = t => fetch(`/api/photo/${modalPhoto.uuid}/edit`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Edit-Token': t},
+    body: JSON.stringify(body),
+  });
+
+  try {
+    let resp = await send(token);
+    if (resp.status === 403) {
+      localStorage.removeItem('deleteToken');
+      const retry = getDeleteToken(true);
+      if (!retry) { btn.disabled = false; btn.innerHTML = label; return; }
+      resp = await send(retry);
+    }
+    const result = await resp.json();
+    if (!resp.ok) {
+      status.textContent = 'Save failed: ' + (result.error || resp.status);
+      status.classList.add('visible');
+      btn.disabled = false;
+      btn.innerHTML = label;
+      return;
+    }
+    editDraft = null;
+    refreshCard(result.photo);
+    renderModalView(result.photo);
+  } catch (e) {
+    status.textContent = 'Save failed: ' + e;
+    status.classList.add('visible');
+    btn.disabled = false;
+    btn.innerHTML = label;
+  }
+}
+
+// Patch the grid card behind the modal in place. Re-running the search would
+// reset the page and scroll position for a one-row change.
+function refreshCard(p) {
+  document.querySelectorAll(`.card[data-uuid="${p.uuid}"]`).forEach(card => {
+    const date = card.querySelector('.card-date');
+    if (date) date.textContent = p.date || '';
+
+    const tags = Array.isArray(p.gemma_tags) ? p.gemma_tags : [];
+    const desc = card.querySelector('.card-desc');
+    if (desc) desc.textContent = p.gemma_description || tags[0] || '';
+
+    const badges = card.querySelector('.card-badges');
+    if (!badges) return;
+    const people = Array.isArray(p.persons) ? p.persons : [];
+    const place  = p.place_display || p.gemma_location_guess;
+    badges.innerHTML =
+      (tags[0] ? `<span class="badge scene">${esc(tags[0])}</span>` : '') +
+      (place ? `<span class="badge loc">&#128205; ${esc(place.split('(')[0].trim())}</span>` : '') +
+      people.slice(0, 2).map(n => `<span class="badge person">${esc(n.split(' ')[0])}</span>`).join('');
+  });
 }
 
 // ── Share ───────────────────────────────────────────────────────────────────

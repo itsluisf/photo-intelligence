@@ -662,6 +662,80 @@
   }
   .share-btn:hover:not(:disabled) { border-color: var(--accent); }
   .share-btn:disabled { opacity: 0.5; cursor: default; }
+  /* ─── modal metadata editor ─────────────────────────────────────────────── */
+  .edit-btn,
+  .edit-cancel-btn {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text2);
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 7px 14px;
+    cursor: pointer;
+  }
+  .edit-btn:hover, .edit-cancel-btn:hover { border-color: var(--accent); color: var(--text); }
+  .modal-actions .edit-btn { margin-left: auto; }
+  .edit-input {
+    width: 100%;
+    box-sizing: border-box;
+    font-family: inherit;
+    font-size: 13px;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 8px 10px;
+  }
+  .edit-input:focus { outline: none; border-color: var(--accent); }
+  .edit-textarea { min-height: 96px; resize: vertical; line-height: 1.6; }
+  .edit-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .edit-chips:empty { display: none; }
+  .edit-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: var(--text);
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 4px 6px 4px 9px;
+  }
+  .edit-chip button {
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1;
+    color: var(--text3);
+    background: none;
+    border: none;
+    padding: 0 2px;
+    cursor: pointer;
+  }
+  .edit-chip button:hover { color: var(--red); }
+  .edit-hint {
+    font-size: 11px;
+    color: var(--text3);
+    line-height: 1.5;
+    margin-top: 6px;
+  }
+  .edit-status {
+    display: none;
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: var(--red);
+    line-height: 1.5;
+    margin-bottom: 12px;
+  }
+  .edit-status.visible { display: block; }
   .map-stat {
     background: var(--bg2);
     border: 1px solid var(--border);

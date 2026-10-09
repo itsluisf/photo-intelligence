@@ -433,6 +433,7 @@ Generates missing 400px grid thumbnails in a multiprocessing pool. Idempotent; r
 - **Map** — clustered GPS markers (Leaflet + MarkerCluster). Click a cluster to browse photos from that location in a side panel.
 - **Video support** — videos appear in search results with ffmpeg-extracted poster thumbnails and stream in a `<video>` element with Range/seek support.
 - **Share** — a button in the photo view hands the photo to the OS share sheet (Messages, Mail, AirDrop, Save to Photos). Photos go out as an upright 2048-px JPEG — HEIC is converted, so non-Apple recipients can open it — named by date (`2019-08-24-175034.jpg`) instead of a uuid; videos go out as the original file. The share sheet needs a secure origin (HTTPS or `localhost`) and in practice a phone; elsewhere the button downloads the file instead.
+- **Edit** — correct a photo's date, people, AI description, tags or place from the photo view. Edits go to `photo-intel.db` only; Apple Photos and the exported files are never touched. Uses the same `[web] delete_token` as delete (no token configured = editing disabled). A typed place is marked `place_source='manual'` and `photo_intel_places.py --apply` leaves it alone; clear it to hand the photo back to the geocoder. Description and tags edited on a photo Phase 2 has not reached yet are replaced when Phase 2 gets to it.
 
 ---
 
