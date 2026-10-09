@@ -319,9 +319,15 @@ def run_apply(conn: sqlite3.Connection, dump_path: Path,
     log.info("Loaded %d records from %s", len(records), dump_path)
 
     known = {r["uuid"] for r in conn.execute("SELECT uuid FROM photos")}
+    # Hand-corrected places are off limits. This UPDATE is otherwise
+    # unconditional, so without this set a place typed into the web UI would
+    # survive only until the next places run — the edit would look like it
+    # took, then silently revert hours later.
+    manual = {r["uuid"] for r in conn.execute(
+        "SELECT uuid FROM photos WHERE place_source = 'manual'")}
     now = datetime.now(timezone.utc).isoformat()
 
-    rows, unknown, empty = [], 0, 0
+    rows, unknown, empty, protected = [], 0, 0, 0
     for rec in records:
         uuid = rec.get("uuid")
         if not uuid:
@@ -330,6 +336,9 @@ def run_apply(conn: sqlite3.Connection, dump_path: Path,
             # In the library but not ingested — shared albums, or an asset
             # whose media file has not landed on the processing host yet.
             unknown += 1
+            continue
+        if uuid in manual:
+            protected += 1
             continue
         name = _clean(rec.get("name"))
         if not name:
@@ -347,12 +356,13 @@ def run_apply(conn: sqlite3.Connection, dump_path: Path,
             uuid,
         ))
 
-    log.info("Matched %d rows to ingest  (skipped: %d not in DB, %d no place)",
-             len(rows), unknown, empty)
+    log.info("Matched %d rows to ingest  (skipped: %d not in DB, %d no place, "
+             "%d hand-corrected)", len(rows), unknown, empty, protected)
 
     if dry_run:
         log.info("[dry-run] would update %d rows", len(rows))
-        return {"updated": 0, "unknown": unknown, "empty": empty}
+        return {"updated": 0, "unknown": unknown, "empty": empty,
+                "protected": protected}
 
     conn.executemany(
         "UPDATE photos SET place_name=?, place_aoi=?, place_city=?, "
@@ -362,7 +372,8 @@ def run_apply(conn: sqlite3.Connection, dump_path: Path,
     )
     conn.commit()
     log.info("Updated %d rows", len(rows))
-    return {"updated": len(rows), "unknown": unknown, "empty": empty}
+    return {"updated": len(rows), "unknown": unknown, "empty": empty,
+            "protected": protected}
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +486,9 @@ def run_backfill_video_gps(conn: sqlite3.Connection, dry_run: bool) -> dict:
 # Borrowed rows are marked place_source='nearby', NOT 'apple', so an inferred
 # place is never mistaken for an authoritative one. A later --apply that finds
 # a real place for the row overwrites it (run_apply writes place_source='apple'
-# unconditionally), so this can only ever fill a hole, never hold one open.
+# for everything in the dump except place_source='manual'), so this can only
+# ever fill a hole, never hold one open. It cannot touch a hand-corrected place
+# either: it only selects rows whose place_name is NULL or ''.
 
 # ~1.1 km per cell at the equator — comfortably larger than any sane radius,
 # so a 3x3 neighbourhood always contains every candidate.
