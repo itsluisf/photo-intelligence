@@ -10,6 +10,9 @@ photo-intel.conf
 *.sqlite3
 # legacy keyword map (build_legacy_keywords.py) — derived from your library
 *.json.gz
+# person-name data — derived from your library and full of real names
+person_aliases.json
+apple_vocab*.json
 
 # Logs
 *.log

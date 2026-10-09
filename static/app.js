@@ -36,13 +36,22 @@ async function init() {
     opt.value = y; opt.textContent = y;
     yearSel.appendChild(opt);
   });
+  // People is a typeahead, not a <select> — a flat option list was capped at
+  // the top 50 by photo count, which silently hid everyone else. /api/people
+  // serves the Apple Photos vocabulary once it has been loaded (see
+  // photo_intel_names_admin.py refresh-vocab), rather than every legacy XMP
+  // tag off old scans. Suggestions only: the input is free text, so anything
+  // is still typeable and searchable. Add ?vocab=all here to suggest the
+  // legacy names too.
   const people = await fetch('/api/people').then(r => r.json());
-  const personSel = document.getElementById('personFilter');
-  people.slice(0, 50).forEach(p => {
+  const personList = document.getElementById('personOptions');
+  const frag = document.createDocumentFragment();
+  people.forEach(p => {
     const opt = document.createElement('option');
-    opt.value = p; opt.textContent = p;
-    personSel.appendChild(opt);
+    opt.value = p;
+    frag.appendChild(opt);
   });
+  personList.appendChild(frag);
   loadVoiceResults({});
 }
 
@@ -416,7 +425,7 @@ function renderModalEditor() {
     <div class="meta-section">
       <div class="meta-label">People</div>
       <div class="edit-chips" id="edit-persons-chips">${chipRow('persons', editDraft.persons)}</div>
-      <input class="edit-input" id="edit-persons-input"
+      <input class="edit-input" id="edit-persons-input" list="personOptions"
              autocomplete="off" placeholder="Add a person, then Enter"
              onkeydown="editChipKey(event, 'persons')"
              onblur="editChipAdd('persons', this)">
@@ -842,8 +851,10 @@ function statsJump(kind, value) {
   document.getElementById('sceneFilter').value  = '';
   const el = document.getElementById(sel);
   el.value = value;
-  // personFilter only lists the top 50 — a missing option leaves value ''.
-  if (el.value !== value) {
+  // A <select> silently keeps '' when the value has no matching option;
+  // inject one so the jump still works. personFilter is a typeahead input
+  // now, so it always takes the value and never reaches this.
+  if (el.tagName === 'SELECT' && el.value !== value) {
     const opt = document.createElement('option');
     opt.value = value; opt.textContent = value;
     el.appendChild(opt);

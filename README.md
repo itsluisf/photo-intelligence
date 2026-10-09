@@ -411,6 +411,47 @@ Three properties worth preserving if you modify it:
 No FTS rebuild is needed — the sync triggers fire on `UPDATE`, so borrowed
 rows are searchable immediately.
 
+### Person names (optional)
+
+`persons` comes from each file's `XMP:PersonInImage`, which carries Apple
+Photos' face names *and* any face tags baked into imported files by other
+software. So the same person can arrive spelled several ways (`Jane Doe` /
+`jane doe`), and old scans can bring a long tail of nicknames and
+relationship words. Two optional mechanisms tidy that up; with neither set
+up, everything behaves as before.
+
+**Apple vocabulary — which names the People box suggests.** On the Mac, dump
+the people actually named in Apple Photos, then load it on the processing
+host:
+
+```bash
+# Mac (takes a few minutes on a large library)
+python3 src/photo_intel_apple_vocab.py -o apple_vocab.json
+# processing host
+python3 src/photo_intel_names_admin.py refresh-vocab apple_vocab.json
+```
+
+The People typeahead and Smart Search then offer only those names. Nothing is
+hidden from search — the People box is free text, so any other tag still
+works when typed. Re-run it after naming new people in Photos.
+
+**Aliases — one spelling per person.** `person_aliases.json` (next to the
+scripts) maps raw names to a canonical spelling; Phase 1 applies it at ingest.
+
+```bash
+python3 src/photo_intel_names_admin.py build-aliases    # case-only variants, automatic
+python3 src/photo_intel_names_admin.py report > review.md   # names worth a human decision
+# put decisions in the file's "curated" block: "raw name": "Canonical Name"
+python3 src/photo_intel_names_admin.py backfill           # dry run on existing rows
+python3 src/photo_intel_names_admin.py backfill --apply
+```
+
+`build-aliases` only ever collapses names that differ by letter case;
+anything needing judgment (is "Grandpa" this person?) goes in `curated`,
+which always wins and is never rewritten. **Both files are full of real
+names**: `person_aliases.json` and `apple_vocab*.json` are gitignored —
+keep it that way if you fork this repo.
+
 ### Web app
 
 ```bash

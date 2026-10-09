@@ -25,6 +25,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import photo_intel_names as names_mod
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -34,6 +36,20 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("photo_intel_phase1")
+
+# Person-name aliases (photo_intel_names.py). Loaded once per run rather than
+# per photo: a run processes tens of thousands of sidecars, and the map is
+# static for the duration. No person_aliases.json means no rewriting.
+_ALIASES = None
+
+
+def person_aliases() -> dict:
+    global _ALIASES
+    if _ALIASES is None:
+        _ALIASES = names_mod.load_aliases()
+        if _ALIASES:
+            log.info("person aliases loaded: %d", len(_ALIASES))
+    return _ALIASES
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -375,9 +391,14 @@ def parse_sidecar(json_path: Path) -> dict | None:
             gps_lon_ref = "E" if gps_lon >= 0 else "W"
 
     # --- people ---
-    persons = rec.get("XMP:PersonInImage", [])
-    if isinstance(persons, str):
-        persons = [persons]
+    # XMP:PersonInImage is not just Apple's naming — it also carries face tags
+    # baked into imported files by other software, so the same person arrives
+    # spelled several ways ("Jane"/"jane"). The alias map collapses those to
+    # one canonical spelling; with no alias file it is a no-op.
+    raw_persons = rec.get("XMP:PersonInImage", [])
+    if isinstance(raw_persons, str):
+        raw_persons = [raw_persons]
+    persons = names_mod.canonicalize(raw_persons, person_aliases())
 
     # --- scene labels: keywords minus person names ---
     keywords = rec.get("IPTC:Keywords") or rec.get("XMP:Subject") or []
@@ -386,7 +407,11 @@ def parse_sidecar(json_path: Path) -> dict | None:
     # Both sides are stripped before comparing: some Apple person names carry
     # trailing whitespace ("Cruise ship entertainer "), and comparing a
     # stripped name against an unstripped keyword lets it through as a scene.
+    # Match on the raw spellings as well as the canonical ones — the keyword
+    # list still holds what was written to the file, so filtering on the
+    # canonical name alone would let the original spelling leak into scenes.
     person_set = {p.strip().lower() for p in persons if isinstance(p, str)}
+    person_set |= {p.strip().lower() for p in raw_persons if isinstance(p, str)}
     scene_labels = [k for k in keywords if k.strip().lower() not in person_set]
 
     # --- face regions ---

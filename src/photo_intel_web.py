@@ -52,6 +52,9 @@ from flask import render_template_string
 # Shared with Phase 2 / 2b so the place string a viewer reads is the same one
 # the VLM was told. Sibling module in this script's own directory.
 from photo_intel_places import place_display
+# Apple-vs-legacy person vocabulary; see the module docstring for why the
+# persons column holds names Apple Photos has never heard of.
+import photo_intel_names as names_mod
 
 try:
     from PIL import Image, ImageOps
@@ -719,7 +722,27 @@ def years():
 
 @app.route("/api/people")
 def people():
+    """Person names for the People typeahead, most-photographed first.
+
+    `?vocab=apple` (the default) returns only people actually named in Apple
+    Photos. The rest of the `persons` vocabulary is legacy XMP face tags
+    carried in from imported files — case variants, nicknames and
+    relationship words like "Mommy" off old scans — which typically appear on
+    one or two photos each, so offering them as suggestions buries the real
+    names.
+
+    Nothing is hidden from search by this: the People control is a free-text
+    input, so a legacy tag is still found by typing it. `?vocab=all` returns
+    the unfiltered list.
+
+    When `apple_persons` has never been refreshed (photo_intel_apple_vocab.py
+    + photo_intel_names_admin.py refresh-vocab) the table is empty or absent,
+    which means "vocabulary unknown" — everything is returned, i.e. the
+    behavior before this filter existed.
+    """
+    want_all = request.args.get("vocab", "apple").lower() == "all"
     conn = get_db()
+    known = set() if want_all else names_mod.apple_person_names(conn)
     rows = conn.execute(
         "SELECT persons FROM photos "
         "WHERE media_type IN ('image','video') AND persons IS NOT NULL AND persons != '[]'"
@@ -727,9 +750,12 @@ def people():
     conn.close()
     count = {}
     for row in rows:
-        for name in parse_json_array(row[0]):
-            if name and name.strip():
-                count[name] = count.get(name, 0) + 1
+        names = {n.strip() for n in parse_json_array(row[0])
+                 if isinstance(n, str) and n.strip()}
+        if known:
+            names = {n for n in names if n.lower() in known}
+        for name in names:
+            count[name] = count.get(name, 0) + 1
     return jsonify(sorted(count.keys(), key=lambda n: -count[n]))
 
 
@@ -839,11 +865,18 @@ def people_list():
     """Distinct named persons across the library — the closed list the
     model is allowed to pick from. Cached: smart_parse is on the hot
     path of every Smart/voice search and must not pay a full-table
-    scan per request."""
+    scan per request.
+
+    Restricted to the Apple Photos vocabulary for the same reason
+    /api/people is: feeding the legacy XMP tail to the model both bloats the
+    prompt and invites resolving "mommy" or a nickname to a filter that
+    matches almost nothing. Falls back to every name while apple_persons is
+    unpopulated."""
     now = time.time()
     if _people_cache["names"] is not None and now - _people_cache["ts"] < _PEOPLE_TTL_S:
         return _people_cache["names"]
     conn = get_db()
+    known = names_mod.apple_person_names(conn)
     rows = conn.execute(
         "SELECT persons FROM photos "
         "WHERE media_type IN ('image','video') AND persons IS NOT NULL AND persons != '[]'"
@@ -852,8 +885,12 @@ def people_list():
     names = set()
     for row in rows:
         for name in parse_json_array(row[0]):
-            if name and name.strip():
-                names.add(name.strip())
+            name = (name or "").strip() if isinstance(name, str) else ""
+            if not name:
+                continue
+            if known and name.lower() not in known:
+                continue
+            names.add(name)
     _people_cache["names"] = sorted(names)
     _people_cache["ts"] = now
     return _people_cache["names"]
@@ -1481,9 +1518,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <select id="yearFilter" onchange="doSearch()">
       <option value="">All years</option>
     </select>
-    <select id="personFilter" onchange="doSearch()">
-      <option value="">All people</option>
-    </select>
+    <input id="personFilter" list="personOptions" autocomplete="off"
+           placeholder="All people" onchange="doSearch()">
+    <datalist id="personOptions"></datalist>
     <select id="sceneFilter" onchange="doSearch()">
       <option value="">All scenes</option>
 {{ tag_options|safe }}
