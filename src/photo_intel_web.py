@@ -74,6 +74,8 @@ except ImportError:
 DEFAULT_PORT     = 5052
 THUMB_SIZE       = 400    # px, longest edge for grid thumbnails
 MODAL_SIZE       = 800    # px, longest edge for the modal image
+SHARE_SIZE       = 2048   # px, longest edge for the /share rendition
+SHARE_QUALITY    = 90     # JPEG quality for /share — this one leaves the house
 PAGE_SIZE        = 48     # photos per page
 INDEX_REFRESH_S  = 600    # uuid->path index refresh interval (seconds)
 
@@ -231,11 +233,16 @@ def extract_video_frame(src: Path) -> bytes | None:
     return None
 
 
-def make_thumbnail(uuid: str, src: Path, size: int) -> bytes | None:
+def make_thumbnail(uuid: str, src: Path, size: int,
+                   quality: int = 78) -> bytes | None:
     """Return JPEG bytes for a thumbnail of `src` at the given longest-edge
     size. Cached on disk under THUMB_DIR as <uuid>_<size>.jpg. Video
-    sources are thumbnailed from an ffmpeg-extracted frame."""
-    cache_path = THUMB_DIR / f"{uuid}_{size}.jpg"
+    sources are thumbnailed from an ffmpeg-extracted frame.
+
+    `quality` is in the cache filename when it is not the default, so /share's
+    higher-quality rendition and a same-size thumbnail cannot collide."""
+    suffix_q   = f"_q{quality}" if quality != 78 else ""
+    cache_path = THUMB_DIR / f"{uuid}_{size}{suffix_q}.jpg"
     if cache_path.exists():
         try:
             return cache_path.read_bytes()
@@ -265,7 +272,7 @@ def make_thumbnail(uuid: str, src: Path, size: int) -> bytes | None:
         if scale < 1:
             img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=78)
+        img.save(buf, format="JPEG", quality=quality)
         data = buf.getvalue()
     except Exception:
         return None
@@ -516,6 +523,69 @@ def original(uuid):
         abort(404)
     # conditional=True enables Range requests — required for <video> seek.
     return send_file(str(resolved), conditional=True)
+
+
+def share_filename(uuid: str, ext: str) -> str:
+    """`1980-08-19-150144.jpg` — a name the share sheet can show and a recipient
+    can file, instead of a uuid. Date and time come from the DB, never from the
+    request; the strip is belt-and-braces so nothing can reach the
+    Content-Disposition header that would need quoting."""
+    stem = uuid
+    try:
+        conn = get_db()
+        row  = conn.execute("SELECT date, time FROM photos WHERE uuid=?",
+                            (uuid,)).fetchone()
+        conn.close()
+        if row and row["date"]:
+            t = "".join(c for c in (row["time"] or "") if c.isdigit())
+            stem = row["date"] + (f"-{t}" if t else "")
+    except Exception:
+        pass
+    stem = "".join(c for c in stem if c.isalnum() or c in "-_")
+    return f"{stem}.{ext}"
+
+
+@app.route("/share/<uuid>")
+def share(uuid):
+    """A share-ready rendition of one photo, for the browser's share sheet.
+
+    Deliberately not `/original`, for three reasons: much of an Apple Photos
+    library is HEIC, and an HEIC handed to a non-Apple recipient is an
+    unopenable file; `/original` serves the bytes as stored, while
+    make_thumbnail applies the EXIF orientation, so a photo shot sideways goes
+    out upright; and the on-disk name is a uuid. Videos have none of those
+    problems, so they are passed through byte-for-byte.
+
+    Same `lookup_path` -> `_sandboxed_path` chain as every other file-serving
+    route — the uuid is a DB key, never a client-supplied path."""
+    src = lookup_path(uuid)
+    if src is None:
+        abort(404)
+    resolved = _sandboxed_path(src)
+    if resolved is None:
+        abort(403)
+    if not resolved.exists():
+        abort(404)
+
+    suffix = resolved.suffix.lower()
+    if suffix in VIDEO_EXTS:
+        # conditional=True keeps Range support. The Content-Disposition is written
+        # by hand rather than left to as_attachment/download_name: send_file emits
+        # an *unquoted* filename token, so the two media types would hand the
+        # client two different header forms. One quoted form for both.
+        resp = send_file(str(resolved), conditional=True)
+        resp.headers["Content-Disposition"] = (
+            f'attachment; filename="{share_filename(uuid, suffix.lstrip("."))}"')
+        return resp
+
+    data = make_thumbnail(uuid, resolved, SHARE_SIZE, quality=SHARE_QUALITY)
+    if not data:
+        abort(404)
+    return Response(data, mimetype="image/jpeg", headers={
+        "Content-Disposition":
+            f'attachment; filename="{share_filename(uuid, "jpg")}"',
+        "Cache-Control": "private, max-age=3600",
+    })
 
 
 @app.route("/api/stats")

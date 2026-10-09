@@ -299,13 +299,91 @@ async function renderModal(uuid) {
     </div>` : ''}
 
     ${p.has_file ? `
-    <div class="meta-section">
+    <div class="meta-section modal-actions">
+      <button class="share-btn" onclick="sharePhoto('${p.uuid}', this)">&#8593; Share</button>
       <a class="map-popup-open" href="/original/${p.uuid}" target="_blank">Open original &rarr;</a>
     </div>` : `
     <div class="meta-section">
       <div class="meta-value" style="color:var(--red)">&#9888; No local file found for this photo</div>
     </div>`}
   `;
+}
+
+// ── Share ───────────────────────────────────────────────────────────────────
+// Hands the photo to the OS share sheet — Messages, Mail, AirDrop, Save to
+// Photos on an iPhone. navigator.share with files needs a secure origin (HTTPS
+// or localhost) and is mobile-only in practice, so desktop browsers and plain
+// HTTP on the LAN fall back to a download. Same bytes either way: /share/<uuid>
+// serves an upright JPEG for photos and the original file for videos, both with
+// a dated filename (see the route's docstring).
+
+function filenameFromDisposition(v) {
+  if (!v) return null;
+  // RFC 6266 allows the filename as a quoted string *or* a bare token, and
+  // Flask's send_file emits the bare form. Matching only the quoted form is how
+  // shared videos end up named <uuid>.jpg — MP4 bytes with a JPEG extension,
+  // which nothing will open. filename*= (RFC 5987) wins when both are present.
+  const enc = v.match(/filename\*=\s*[^']*'[^']*'([^;]+)/i);
+  if (enc) {
+    try { return decodeURIComponent(enc[1].trim()); } catch (e) { /* fall through */ }
+  }
+  const m = v.match(/filename=\s*(?:"([^"]*)"|([^;]+))/i);
+  if (!m) return null;
+  const name = (m[1] !== undefined ? m[1] : m[2]).trim();
+  return name || null;
+}
+
+// Last resort when the header is unreadable: name the file after what the
+// server says it *is*. Never a hard-coded extension.
+function extFromMime(type) {
+  const sub = (type || '').split('/')[1] || '';
+  const ext = sub.split(';')[0].trim().toLowerCase();
+  if (!ext) return 'bin';
+  return { jpeg: 'jpg', quicktime: 'mov', 'x-msvideo': 'avi', mpeg: 'mpg' }[ext] || ext;
+}
+
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function sharePhoto(uuid, btn) {
+  const label = btn ? btn.innerHTML : null;
+  if (btn) { btn.disabled = true; btn.innerHTML = 'Preparing&hellip;'; }
+  try {
+    const res = await fetch(`/share/${uuid}`);
+    if (!res.ok) throw new Error(`server said ${res.status}`);
+
+    const fromHeader = filenameFromDisposition(res.headers.get('Content-Disposition'));
+    // A long video can be hundreds of MB; don't buffer that into a Blob just to
+    // reach the share sheet — hand the URL to the browser instead.
+    const len = Number(res.headers.get('Content-Length') || 0);
+    if (len > 200 * 1024 * 1024) { window.location.href = `/share/${uuid}`; return; }
+
+    const blob = await res.blob();
+    const name = fromHeader || `${uuid}.${extFromMime(blob.type)}`;
+    const file = new File([blob], name,
+                          { type: blob.type || 'application/octet-stream' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file] });
+    } else {
+      downloadBlob(blob, name);
+    }
+  } catch (e) {
+    // AbortError is the user dismissing the share sheet — not a failure.
+    if (e && e.name !== 'AbortError') {
+      console.error(e);
+      alert('Share failed: ' + e.message);
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = label; }
+  }
 }
 
 function closeModal(e) {

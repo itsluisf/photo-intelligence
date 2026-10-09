@@ -641,6 +641,27 @@
     margin-top: 6px;
     display: inline-block;
   }
+  .modal-actions {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .modal-actions .map-popup-open { margin-top: 0; }
+  .share-btn {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 7px 14px;
+    cursor: pointer;
+  }
+  .share-btn:hover:not(:disabled) { border-color: var(--accent); }
+  .share-btn:disabled { opacity: 0.5; cursor: default; }
   .map-stat {
     background: var(--bg2);
     border: 1px solid var(--border);
