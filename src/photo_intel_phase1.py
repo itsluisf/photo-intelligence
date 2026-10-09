@@ -305,8 +305,11 @@ def parse_sidecar(json_path: Path) -> dict | None:
     keywords = rec.get("IPTC:Keywords") or rec.get("XMP:Subject") or []
     if isinstance(keywords, str):
         keywords = [keywords]
-    person_set = set(p.lower() for p in persons)
-    scene_labels = [k for k in keywords if k.lower() not in person_set]
+    # Both sides are stripped before comparing: some Apple person names carry
+    # trailing whitespace ("Cruise ship entertainer "), and comparing a
+    # stripped name against an unstripped keyword lets it through as a scene.
+    person_set = {p.strip().lower() for p in persons if isinstance(p, str)}
+    scene_labels = [k for k in keywords if k.strip().lower() not in person_set]
 
     # --- face regions ---
     region_info = rec.get("XMP-mwg-rs:RegionInfo", {})
@@ -485,6 +488,21 @@ def main() -> None:
         time.sleep(args.interval)
 
     conn.close()
+
+    # Exit non-zero only when the run had work in hand and none of it
+    # succeeded — i.e. every sidecar seen errored. Individual parse/insert
+    # errors are counted, logged, and recorded in phase1_log; a few are not a
+    # unit failure. A run that only *skips* is a success: skipped means the
+    # file was seen and correctly needed no work, which is the steady state.
+    # An empty dest_dir yields no errors and exits 0. Symmetric with
+    # photo_intel_phase2.py and photo_intel_video.py, which exit 1 only on zero
+    # progress against a non-empty queue. Reachable in --once mode (what the
+    # timer runs); the daemon loop never leaves the while.
+    progress = stats["inserted"] + stats["updated"] + stats["skipped"]
+    if stats["errors"] and not progress:
+        log.error("every one of the %d sidecars seen failed to ingest — "
+                  "exiting non-zero", stats["files_seen"])
+        sys.exit(1)
 
 
 if __name__ == "__main__":
