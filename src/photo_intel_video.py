@@ -613,6 +613,10 @@ def load_config(path: Path) -> dict:
         # Ollama job's 06:00-07:30 window, so the two never contend.
         "max_minutes": cp.getint("video", "max_minutes", fallback=285),
         "keep_alive": cp.get("video", "keep_alive", fallback="15m"),
+        # How many failures must accumulate before a zero-success run counts as
+        # systemic — see the exit guard at the end of main(). Deliberately not
+        # written into the shipped conf: one less key to drift out of sync.
+        "fail_floor": cp.getint("video", "fail_floor", fallback=3),
     }
 
 
@@ -777,8 +781,20 @@ def main():
     # retried on the next run — a few must NOT put the nightly oneshot into
     # `failed` state (self-healing noise). Only surface a systemic failure: work
     # was attempted but nothing at all succeeded.
-    if stats["ok"] == 0 and stats["fail"] > 0:
+    #
+    # The zero-success test alone was written for backlog-sized runs, when a
+    # run described hundreds of clips and "nothing succeeded" really was
+    # systemic. Once the backlog is cleared a night is typically 1-4 new clips,
+    # so two ordinary runaway-thinking failures ARE the whole run and routine
+    # noise alerts. Hence the floor: a zero-success run is only systemic once
+    # fail_floor failures have piled up. Because a failed clip stays pending and
+    # the queue carries it forward, a real outage crosses the floor within a
+    # night or two while a transient never does.
+    if stats["ok"] == 0 and stats["fail"] >= cfg["fail_floor"]:
         sys.exit(1)
+    if stats["ok"] == 0 and stats["fail"] > 0:
+        print(f"  ({stats['fail']} failed, below the systemic floor of "
+              f"{cfg['fail_floor']} — left pending for the next run)")
 
 
 if __name__ == "__main__":
