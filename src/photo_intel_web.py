@@ -523,12 +523,12 @@ def stats():
     conn = get_db()
     s = {}
     for label, sql in [
-        ("total",       "SELECT COUNT(*) FROM photos WHERE media_type='image'"),
-        ("with_gemma",  "SELECT COUNT(*) FROM photos WHERE media_type='image' "
+        ("total",       "SELECT COUNT(*) FROM photos WHERE media_type IN ('image','video')"),
+        ("with_gemma",  "SELECT COUNT(*) FROM photos WHERE media_type IN ('image','video') "
                         "AND phase2_processed=1"),
-        ("with_gps",    "SELECT COUNT(*) FROM photos WHERE media_type='image' "
+        ("with_gps",    "SELECT COUNT(*) FROM photos WHERE media_type IN ('image','video') "
                         "AND gps_lat IS NOT NULL"),
-        ("with_people", "SELECT COUNT(*) FROM photos WHERE media_type='image' "
+        ("with_people", "SELECT COUNT(*) FROM photos WHERE media_type IN ('image','video') "
                         "AND persons IS NOT NULL AND persons != '[]'"),
         ("year_min",    "SELECT MIN(substr(date,1,4)) FROM photos "
                         "WHERE date IS NOT NULL AND date != ''"),
@@ -542,7 +542,7 @@ def stats():
     scenes = conn.execute(f"""
         SELECT value AS tag, COUNT(*) c
         FROM photos, json_each(photos.gemma_tags)
-        WHERE media_type='image'
+        WHERE media_type IN ('image','video')
           AND phase2_processed=1
           AND value IN ({placeholders})
         GROUP BY value
@@ -554,7 +554,7 @@ def stats():
     # Top people — counted from the persons JSON arrays.
     people_rows = conn.execute(
         "SELECT persons FROM photos "
-        "WHERE media_type='image' AND persons IS NOT NULL AND persons != '[]'"
+        "WHERE media_type IN ('image','video') AND persons IS NOT NULL AND persons != '[]'"
     ).fetchall()
     people_count = {}
     for row in people_rows:
@@ -569,7 +569,7 @@ def stats():
     # Photos per year.
     years = conn.execute("""
         SELECT substr(date,1,4) y, COUNT(*) c FROM photos
-        WHERE media_type='image' AND date IS NOT NULL AND date != ''
+        WHERE media_type IN ('image','video') AND date IS NOT NULL AND date != ''
         GROUP BY y ORDER BY y
     """).fetchall()
     s["by_year"] = [{"year": r[0], "count": r[1]} for r in years]
@@ -583,7 +583,7 @@ def years():
     conn = get_db()
     rows = conn.execute("""
         SELECT DISTINCT substr(date,1,4) y FROM photos
-        WHERE media_type='image' AND date IS NOT NULL AND date != ''
+        WHERE media_type IN ('image','video') AND date IS NOT NULL AND date != ''
         ORDER BY y DESC
     """).fetchall()
     conn.close()
@@ -595,7 +595,7 @@ def people():
     conn = get_db()
     rows = conn.execute(
         "SELECT persons FROM photos "
-        "WHERE media_type='image' AND persons IS NOT NULL AND persons != '[]'"
+        "WHERE media_type IN ('image','video') AND persons IS NOT NULL AND persons != '[]'"
     ).fetchall()
     conn.close()
     count = {}
@@ -608,7 +608,7 @@ def people():
 
 @app.route("/api/map_points")
 def map_points():
-    """Image photos with GPS, honoring the same filters as /api/search."""
+    """Photos and videos with GPS, honoring the same filters as /api/search."""
     q          = request.args.get("q", "").strip()
     year       = request.args.get("year", "").strip()
     year_from  = request.args.get("year_from", "").strip()
@@ -621,7 +621,7 @@ def map_points():
 
     conn   = get_db()
     params = []
-    where  = ["media_type = 'image'",
+    where  = ["media_type IN ('image','video')",
               "gps_lat IS NOT NULL", "gps_lon IS NOT NULL"]
 
     if has_gemma == "1":
@@ -719,7 +719,7 @@ def people_list():
     conn = get_db()
     rows = conn.execute(
         "SELECT persons FROM photos "
-        "WHERE media_type='image' AND persons IS NOT NULL AND persons != '[]'"
+        "WHERE media_type IN ('image','video') AND persons IS NOT NULL AND persons != '[]'"
     ).fetchall()
     conn.close()
     names = set()
