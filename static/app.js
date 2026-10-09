@@ -11,6 +11,15 @@ let _mapClusters = null;
 let _mapStat = null;
 const BAD_DESC = ['parse error','file not found','image encode failed'];
 
+// Keyword-mode tooltip. Mirrors FTS_COLUMNS in photo_intel_web.py — if the
+// accepted names change there, change them here too.
+const SCOPE_HINT =
+  'Prefix a word with a column to scope it, e.g. place:paris finds photos '
+  + 'taken in Paris, not ones that merely mention it.\n'
+  + 'Columns: description, tags, person, location, place '
+  + '(full names also work).\n'
+  + 'Terms are matched whole, and multiple terms are ANDed.';
+
 // Escape DB/model text before innerHTML interpolation — Gemma output
 // occasionally contains angle brackets and quotes.
 function esc(s) {
@@ -56,7 +65,12 @@ function toggleSmart() {
   document.getElementById('searchIcon').innerHTML = smartMode ? '&#10024;' : '&#9906;';
   document.getElementById('searchInput').placeholder = smartMode
     ? 'Smart Search - describe what you are looking for...'
-    : 'Search descriptions, locations, people, tags...';
+    // Hint first: at mobile widths the input truncates the placeholder around
+    // 26 characters, so anything after that is invisible on a phone.
+    : 'Try place:paris, or search descriptions, people, tags';
+  // col:term scopes to one FTS column; only meaningful in keyword mode, since
+  // Smart mode rewrites the query before it reaches /api/search.
+  document.getElementById('searchInput').title = smartMode ? '' : SCOPE_HINT;
   document.getElementById('smartStatus').textContent = '';
 }
 

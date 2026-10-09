@@ -294,9 +294,63 @@ def make_thumbnail(uuid: str, src: Path, size: int,
 # HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Indexed columns of photos_fts, plus short aliases for the gemma_-prefixed
+# ones. A "col:term" query is scoped to that column; anything else with a colon
+# in it is treated as ordinary text. static/app.js's SCOPE_HINT lists the same
+# names — change both together.
+FTS_COLUMNS = {
+    "gemma_description":    "gemma_description",
+    "gemma_tags":           "gemma_tags",
+    "persons":              "persons",
+    "gemma_location_guess": "gemma_location_guess",
+    "place_name":           "place_name",
+    # aliases
+    "description":          "gemma_description",
+    "tags":                 "gemma_tags",
+    "person":               "persons",
+    "location":             "gemma_location_guess",
+    "place":                "place_name",
+}
+
+# Columns the database's photos_fts actually has, read once. An index built
+# before place_name existed (see migrations/) lacks it, and scoping to a column
+# the index does not have is an FTS5 error — a 500 instead of a search. A scope
+# to a known but missing column drops the prefix and searches the word
+# unscoped instead.
+_fts_present = None
+
+
+def _fts_columns() -> set:
+    global _fts_present
+    if _fts_present is None:
+        try:
+            conn = get_db()
+            _fts_present = {r[1] for r in conn.execute(
+                "PRAGMA table_info(photos_fts)")}
+            conn.close()
+        except Exception:
+            return set()
+    return _fts_present
+
+
 def fts_quote(term: str) -> str:
     """Wrap a single term for FTS5 MATCH. Exact token — prefix matching causes false
-    positives for short words (e.g. 'bird*' matches 'birthday')."""
+    positives for short words (e.g. 'bird*' matches 'birthday').
+
+    A leading "col:" is honoured when col is an indexed photos_fts column (see
+    FTS_COLUMNS), producing 'place_name:"boston"' — the quotes go *inside* the
+    colon. Quoting the whole thing instead gives FTS5 the phrase
+    "place boston", which matches nothing and looks like a broken search.
+    Everything else keeps the old behaviour: the term is quoted whole, so a
+    stray colon, operator or paren is inert text rather than FTS5 syntax."""
+    col, sep, rest = term.partition(":")
+    if sep:
+        target = FTS_COLUMNS.get(col.strip().lower())
+        rest = rest.replace('"', ' ').strip()
+        if target and rest:
+            if target in _fts_columns():
+                return target + ':"' + rest + '"'
+            return '"' + rest + '"'
     return '"' + term.replace('"', ' ').strip() + '"'
 
 

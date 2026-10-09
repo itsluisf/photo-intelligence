@@ -431,7 +431,7 @@ Generates missing 400px grid thumbnails in a multiprocessing pool. Idempotent; r
 ## Web app features
 
 - **Voice** — speak a search query; Ollama parses it into filters; results are read back via speech synthesis. Chrome requires HTTPS for the microphone; Safari works on plain HTTP.
-- **Search** — FTS5 full-text search across AI descriptions, tags, people, and location guesses. Smart Search (Ollama-backed) expands queries with synonyms and parses natural-language filters (year ranges, multiple people, scenes).
+- **Search** — FTS5 full-text search across AI descriptions, tags, people, location guesses and place names. In keyword mode a term can be scoped to one field with a prefix — `place:paris`, `tags:beach`, `person:jane`, `description:`, `location:` (full column names work too); other words containing a colon are searched as plain text. Smart Search (Ollama-backed) expands queries with synonyms and parses natural-language filters (year ranges, multiple people, scenes).
 - **Library Stats** — photo counts by year, top scenes, most-photographed people. Bars are clickable and jump to a filtered search.
 - **Map** — clustered GPS markers (Leaflet + MarkerCluster). Click a cluster to browse photos from that location in a side panel.
 - **Video support** — videos appear in search results with ffmpeg-extracted poster thumbnails and stream in a `<video>` element with Range/seek support.
