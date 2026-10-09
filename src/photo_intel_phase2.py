@@ -622,11 +622,40 @@ def flatten_result(gemma_data: dict) -> tuple:
     return desc, tags_json, loc_guess
 
 
+# ---------------------------------------------------------------------------
+# Hand edits win over enrichment
+# ---------------------------------------------------------------------------
+# The web editor (/api/photo/<uuid>/edit) records which columns a person
+# corrected by hand in photos.edited_fields, a JSON list of column names.
+# Enrichment runs on rows still at phase2_processed=0, so a description or tags
+# typed in before the model reached the photo would otherwise be replaced when
+# it does. write_success() keeps any column named there. The test runs inside
+# the UPDATE itself, so an edit saved while this run is in flight is still
+# honored — no read-then-write window. instr() on the quoted name rather than
+# json_each(): a malformed value can then never make the UPDATE itself fail
+# and wedge the row in the retry queue.
+
+def ensure_edited_fields(conn) -> None:
+    """Add photos.edited_fields if this database predates it. No-op once it
+    exists; the web editor adds it the same way."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(photos)")}
+    if "edited_fields" not in cols:
+        conn.execute("ALTER TABLE photos ADD COLUMN edited_fields TEXT")
+        conn.commit()
+
+
+def _keep_if_edited(col: str) -> str:
+    return (f"{col} = CASE WHEN instr(COALESCE(edited_fields, ''), "
+            f"'\"{col}\"') THEN {col} ELSE ? END")
+
+
 def write_success(conn, uuid: str, gemma_data: dict):
     desc, tags_json, loc_guess = flatten_result(gemma_data)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     conn.execute(
-        "UPDATE photos SET gemma_description=?, gemma_tags=?, "
+        "UPDATE photos SET "
+        + _keep_if_edited("gemma_description") + ", "
+        + _keep_if_edited("gemma_tags") + ", "
         "gemma_location_guess=?, phase2_processed=1, phase2_error=NULL, "
         "phase2_processed_at=? "
         "WHERE uuid=?",
@@ -734,6 +763,8 @@ def main():
         print("Nothing to do — queue empty.")
         conn.close()
         return
+
+    ensure_edited_fields(conn)
 
     client = _ollama.Client(host=cfg["ollama_url"],
                             timeout=cfg["request_timeout"])

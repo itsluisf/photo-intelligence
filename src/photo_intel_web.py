@@ -1197,10 +1197,8 @@ def delete_photos():
 #       Phase 1's upsert (ON CONFLICT DO UPDATE) sets only phase1_processed_at,
 #       sidecar_path and COALESCEd GPS — it never touches these. Phase 2 and
 #       Phase 2b write gemma_description / gemma_tags only for rows still at
-#       phase2_processed=0, i.e. not yet enriched. A row that already has a
-#       description is past that point, so an edit to it sticks. (Editing the
-#       description or tags of a photo Phase 2 has not reached yet is not
-#       protected: Phase 2 will write its own when it gets there.)
+#       phase2_processed=0, i.e. not yet enriched — and even then keep any
+#       column named in edited_fields (below).
 #   date
 #       Nothing recomputes it after Phase 1's insert.
 #   place_*
@@ -1208,15 +1206,27 @@ def delete_photos():
 #       dump EXCEPT place_source='manual', which this route sets. The nearby
 #       fallback only fills rows whose place_name is NULL/''.
 #
-# Any new machine writer over `photos` must leave hand-edited rows alone the
-# same way. The FTS triggers reindex on UPDATE, so search follows an edit with
-# no extra work here.
+# Every edit is also recorded in `edited_fields` (a JSON list of column names).
+# Phase 2 and Phase 2b keep any gemma_description / gemma_tags named there, so
+# a description or tags typed in before the model reaches a photo survive its
+# enrichment instead of being replaced. Any new machine writer over `photos`
+# must honor `edited_fields` the same way. The FTS triggers reindex on UPDATE,
+# so search follows an edit with no extra work here.
 _DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 # Bounds exist so a stuck client can't write a novel into the FTS index.
 MAX_LIST_ITEMS = 60
 MAX_ITEM_CHARS = 120
 MAX_DESC_CHARS = 4000
+
+
+def _ensure_edited_fields(conn) -> None:
+    """Add photos.edited_fields if this database predates it (Phase 2 / 2b add
+    it the same way). Called on the write connection before the first edit."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(photos)")}
+    if "edited_fields" not in cols:
+        conn.execute("ALTER TABLE photos ADD COLUMN edited_fields TEXT")
+        conn.commit()
 
 
 def _clean_str_list(value):
@@ -1334,6 +1344,15 @@ def edit_photo(uuid):
         return jsonify({"error": "nothing to change"}), 400
 
     conn = get_write_db()
+    _ensure_edited_fields(conn)
+    # Accumulate rather than replace: editing the description today must not
+    # un-protect the tags corrected last week. `date` covers datetime_original
+    # too, since retiming writes them as one.
+    prior = conn.execute("SELECT edited_fields FROM photos WHERE uuid=?",
+                         (uuid,)).fetchone()
+    already = set(parse_json_array(prior[0] if prior else None))
+    sets.append("edited_fields = ?")
+    params.append(json.dumps(sorted(already | set(changed))))
     conn.execute(f"UPDATE photos SET {', '.join(sets)} WHERE uuid = ?",
                  params + [uuid])
     conn.commit()
