@@ -54,6 +54,23 @@ CHANGE LOG (2026-05-25, debugging the 117 stuck-pending rows):
     [phase2] num_predict_retry (fallback 2048) used only for the retry pass.
   Nothing about the Ollama client object, its response API, or its version
   was changed.
+
+CHANGE LOG (v2.3, after a 59/60 run was reported as a unit FAILURE):
+  - _generate_once() now parses model replies with json.loads(..., strict=False),
+    as does the balanced-span gate in _extract_json() so both use one predicate.
+    This covers the "Invalid control character at: line N column M" family — a
+    literal newline/tab inside a prose string value. repair_json_quotes() only
+    escapes interior quotes and never addressed it, so the family burned the
+    first attempt AND the larger-budget retry. strict=False relaxes only the
+    control-character rule; genuine structural errors still fail, so this can
+    turn a hard failure into a success and not the reverse.
+  - Exit code: a run exits non-zero only when it had work in hand, completed
+    none of it, and at least fail_floor (default 3) photos failed. Previously
+    ANY per-photo failure hit sys.exit(1), so a single odd reply out of 60 put
+    the unit in `failed` and fired its OnFailure alert. Same policy as
+    photo_intel_video.py.
+  - num_ctx is now [phase2] num_ctx (default 16384, the old hard-coded value).
+    Set it to the context the model is already resident at — see the conf.
 """
 
 import sqlite3
@@ -391,7 +408,7 @@ def _extract_json(raw: str) -> str:
     span = _balanced_json_span(raw)
     if span is not None and span != raw:
         try:
-            json.loads(span)
+            json.loads(span, strict=False)
             return span
         except json.JSONDecodeError:
             pass
@@ -405,7 +422,8 @@ def _extract_json(raw: str) -> str:
 
 
 def _generate_once(client, model: str, prompt: str, image_b64: str,
-                   enable_thinking: bool, num_predict: int) -> dict:
+                   enable_thinking: bool, num_predict: int,
+                   num_ctx: int = 16384) -> dict:
     """Single Ollama generate + parse attempt. Returns parsed JSON, or a dict
     with _error / _parse_error on failure."""
     try:
@@ -422,7 +440,13 @@ def _generate_once(client, model: str, prompt: str, image_b64: str,
             options={
                 "temperature": 0.1,
                 "num_predict": num_predict,
-                "num_ctx": 16384,
+                # Must MATCH the context the model is already resident at. A
+                # different explicit num_ctx makes Ollama restart the runner:
+                # a hard-coded value that differs from the server default
+                # costs a multi-minute reload on every run with work, and
+                # leaves every other client of that model at the wrong context
+                # until something reloads it. See [phase2] num_ctx.
+                "num_ctx": num_ctx,
                 # repeat_penalty / repeat_last_n brake the repetition loop
                 # gemma4:e4b falls into on text-dense images (museum plaques,
                 # foreign-language signs): it transcribes, loses the thread,
@@ -442,21 +466,28 @@ def _generate_once(client, model: str, prompt: str, image_b64: str,
     raw = (response.response if hasattr(response, "response")
            else response.get("response", "")) or ""
 
+    # strict=False permits raw control characters (a literal newline or tab)
+    # inside string values. Gemma emits these in prose descriptions; strict
+    # json.loads rejects them as "Invalid control character at: ..." and
+    # repair_json_quotes() does not address them, so the family failed both
+    # attempts and the larger-budget retry could only make it likelier.
+    # Python still rejects every genuine structural error under strict=False.
     candidate = _extract_json(raw)
     try:
-        return json.loads(candidate)
+        return json.loads(candidate, strict=False)
     except json.JSONDecodeError:
         # gemma4:e4b emits structurally-sound JSON with unescaped interior
         # quotes. Escape them and try once more before declaring failure.
         try:
-            return json.loads(repair_json_quotes(candidate))
+            return json.loads(repair_json_quotes(candidate), strict=False)
         except json.JSONDecodeError as e:
             return {"_parse_error": str(e), "_raw": raw[:500]}
 
 
 def call_gemma(client, model: str, prompt: str, image_b64: str,
                enable_thinking: bool, num_predict: int,
-               num_predict_retry: int | None = None) -> dict:
+               num_predict_retry: int | None = None,
+               num_ctx: int = 16384) -> dict:
     """Send image + prompt to Gemma 4 via Ollama. Returns parsed JSON, or a
     dict with a _error / _parse_error key on failure.
 
@@ -466,7 +497,7 @@ def call_gemma(client, model: str, prompt: str, image_b64: str,
     row is simply left pending for the next scheduled run.
     """
     result = _generate_once(client, model, prompt, image_b64,
-                            enable_thinking, num_predict)
+                            enable_thinking, num_predict, num_ctx)
 
     if "_parse_error" not in result:
         return result
@@ -475,7 +506,7 @@ def call_gemma(client, model: str, prompt: str, image_b64: str,
         return result
 
     retry = _generate_once(client, model, prompt, image_b64,
-                           enable_thinking, num_predict_retry)
+                           enable_thinking, num_predict_retry, num_ctx)
     # If the retry also fails to parse, return it (its _raw reflects the
     # larger-budget attempt, which is more useful for debugging).
     return retry
@@ -639,6 +670,11 @@ def load_config(path: Path) -> dict:
         "num_predict_retry": cp.getint("phase2", "num_predict_retry",
                                        fallback=2048),
         "request_timeout": cp.getint("phase2", "request_timeout", fallback=120),
+        "num_ctx": cp.getint("phase2", "num_ctx", fallback=16384),
+        # How many failures must accumulate before a zero-success run counts as
+        # systemic — see the exit guard at the end of main(). Deliberately not
+        # written into the shipped conf: one less key to drift out of sync.
+        "fail_floor": cp.getint("phase2", "fail_floor", fallback=3),
     }
     return cfg
 
@@ -745,7 +781,7 @@ def main():
         t0 = time.time()
         result = call_gemma(client, cfg["ollama_model"], prompt, img_b64,
                             cfg["enable_thinking"], cfg["num_predict"],
-                            cfg["num_predict_retry"])
+                            cfg["num_predict_retry"], cfg["num_ctx"])
         dt = time.time() - t0
 
         if "_error" in result or "_parse_error" in result:
@@ -787,8 +823,25 @@ def main():
               "SELECT uuid, phase2_error FROM photos "
               "WHERE phase2_error IS NOT NULL AND phase2_processed=0;")
     conn.close()
-    if stats["fail"]:
+    # A run that enriched at least one photo did its job. Individual failures
+    # stay at phase2_processed=0 and retry on the next scheduled run, so they
+    # are not a unit failure — exiting 1 on them put the unit in `failed` and
+    # fired an OnFailure alert for a run that was 59/60 successful. Exit
+    # non-zero only when the run had work in hand and completed none of it:
+    # that is a broken model or host, not one odd reply.
+    #
+    # The zero-success test alone is queue-size sensitive: on a quiet day the
+    # queue is a handful of photos, so a couple of unlucky replies ARE the whole
+    # run and routine self-clearing noise alerts. Hence the floor — a
+    # zero-success run is only systemic once fail_floor failures have piled up.
+    # Because a failed row stays at phase2_processed=0 and the queue carries it
+    # forward, a real outage crosses the floor within a run or two while a
+    # transient never does.
+    if stats["fail"] and not stats["ok"] and stats["fail"] >= cfg["fail_floor"]:
         sys.exit(1)
+    if stats["fail"] and not stats["ok"]:
+        print(f"  ({stats['fail']} failed, below the systemic floor of "
+              f"{cfg['fail_floor']} — left pending for the next run)")
 
 
 if __name__ == "__main__":

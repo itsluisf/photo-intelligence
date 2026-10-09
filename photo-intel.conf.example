@@ -108,6 +108,12 @@ enable_thinking  = false
 num_predict      = 1024
 num_predict_retry = 2048
 request_timeout  = 180
+# Context window sent with every request. Set it to the context the model is
+# already loaded at on your Ollama server (`ollama ps`, CONTEXT column — the
+# server's OLLAMA_CONTEXT_LENGTH if set). A different value makes Ollama reload
+# the model on every run, which costs minutes and changes the context for every
+# other client of that model. 16384 is enough for one image plus the reply.
+num_ctx          = 16384
 
 [video]
 # Phase 2b — video enrichment (photo_intel_video.py). Optional: omit this
