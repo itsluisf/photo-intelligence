@@ -91,8 +91,14 @@ brew install python ollama
 # osxphotos — the Apple Photos exporter (macOS only)
 #   Prefer a pipx/global install so it's on PATH for scheduled jobs.
 brew install pipx && pipx ensurepath && pipx install osxphotos
-osxphotos --version
+osxphotos --version     # must be 0.77.1 or later on macOS 27
 ```
+
+> **Version check:** macOS 27 changed the Photos library schema; osxphotos
+> releases before 0.77.1 cannot read it. If `osxphotos --version` is older,
+> `pipx upgrade osxphotos`. Tested on macOS 26.7 and 27.0. If the user is
+> upgrading an existing install across a major macOS release, stop and follow
+> `docs/upgrading-macos.md` before running any export.
 
 > **First-run permissions:** the very first `osxphotos` command will trigger a macOS
 > prompt to grant the terminal **Full Disk Access** / Photos access. The user must

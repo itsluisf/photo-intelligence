@@ -165,6 +165,10 @@ Set `mode = local` or `mode = split` in `photo-intel.conf`.
 ## Requirements
 
 - **Export host**: macOS with Apple Photos and [osxphotos](https://github.com/RhetTbull/osxphotos)
+  **0.77.1 or later** — earlier releases cannot read a macOS 27 Photos library
+  ([osxphotos#2221](https://github.com/RhetTbull/osxphotos/issues/2221)).
+  Tested on macOS 26.7 and macOS 27.0. Upgrading an existing install across
+  a major macOS release? Read [docs/upgrading-macos.md](docs/upgrading-macos.md) first.
 - **Processing host**: Python 3.11+, [Ollama](https://ollama.com) with a Gemma 4 vision model
 - **Recommended model**: `gemma4:12b-it-q8_0` (GPU); `gemma4:e4b` works on CPU
 - **Video enrichment (optional)**: `ffmpeg`/`ffprobe` on PATH, plus a

@@ -5,7 +5,7 @@
 #   pip install -r requirements.txt
 #
 # Export host (macOS only — osxphotos requires macOS):
-#   pip install osxphotos
+#   pipx install osxphotos          # 0.77.1+ required on macOS 27
 #   osxphotos is not listed here because it is macOS-only and the processing
 #   host may be Linux. Install it separately on the Mac export side.
 
