@@ -8,6 +8,8 @@ photo-intel.conf
 *.db-shm
 *.sqlite
 *.sqlite3
+# legacy keyword map (build_legacy_keywords.py) — derived from your library
+*.json.gz
 
 # Logs
 *.log

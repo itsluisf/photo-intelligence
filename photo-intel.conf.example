@@ -94,6 +94,13 @@ windows =
     2025
     2026
 
+# Optional. Path to a pre-upgrade keyword map (build_legacy_keywords.py) that
+# keeps keywords the old macOS search index had and the rebuilt one does not
+# yet. Leave blank on a fresh install. Set it only after a major macOS upgrade,
+# following docs/upgrading-macos.md. If set, the file must exist or the
+# export refuses to run.
+legacy_keywords =
+
 [phase2]
 # Gemma token budget per photo. 1024 works well for gemma4:12b.
 # Raise num_predict_retry for a second attempt on truncated JSON.

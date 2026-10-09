@@ -98,6 +98,8 @@ Mac (Apple Photos library)
                             emit only changed UUIDs (~7 s for 200k assets)
   photo_intel_export.py   — osxphotos export, chunked by year → staging/
                             rsync staging/ → processing host (split mode)
+  photo_intel_legacy_kw.py — optional keyword template that keeps pre-upgrade
+  build_legacy_keywords.py   keywords across a major macOS upgrade
 
 Processing host (Mac in local mode, or Linux/GPU in split mode)
   photo_intel_phase1.py   — ingest sidecar JSON → photo-intel.db

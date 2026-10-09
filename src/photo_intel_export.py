@@ -29,6 +29,7 @@ Usage:
 import argparse
 import configparser
 import logging
+import os
 import resource
 import shlex
 import shutil
@@ -46,6 +47,12 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("photo_intel_export")
+
+# Optional pre-upgrade keyword map ([export] legacy_keywords). When set, every
+# export unions each photo's pre-upgrade keywords back in — see
+# photo_intel_legacy_kw.py and docs/upgrading-macos.md.
+LEGACY_KW_TEMPLATE = Path(__file__).resolve().parent / "photo_intel_legacy_kw.py"
+LEGACY_KW_MAP: Path | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +167,11 @@ def export_window(
     ]
     if uuid_file is not None:
         cmd += ["--uuid-from-file", str(uuid_file)]
+    env = None
+    if LEGACY_KW_MAP is not None:
+        cmd += ["--keyword-template",
+                "{function:" + str(LEGACY_KW_TEMPLATE) + "::legacy_keywords}"]
+        env = {**os.environ, "PHOTO_INTEL_LEGACY_KW": str(LEGACY_KW_MAP)}
 
     log.info("Window %-8s  from %s to %s", window, from_date, to_date)
     log.info("Command: %s", shlex.join(cmd))
@@ -180,7 +192,7 @@ def export_window(
         resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
         log.info("Raised RLIMIT_NOFILE %d → %d", soft, target)
 
-    result = subprocess.run(cmd, text=True)
+    result = subprocess.run(cmd, text=True, env=env)
     if result.returncode != 0:
         log.error("osxphotos failed for window %s (exit %d)", window, result.returncode)
         return False
@@ -351,6 +363,19 @@ def main() -> None:
 
     rsync_dest  = cfg.get("transfer", "rsync_dest", fallback="")
     ssh_key     = cfg.get("transfer", "ssh_key", fallback="")
+
+    # Configured but missing is fatal: exporting without the map would strip
+    # the pre-upgrade keywords from every file the sweep rewrites.
+    global LEGACY_KW_MAP
+    legacy_kw = cfg.get("export", "legacy_keywords", fallback="").strip()
+    if legacy_kw:
+        LEGACY_KW_MAP = Path(legacy_kw).expanduser()
+        if not LEGACY_KW_MAP.is_file():
+            log.error("legacy_keywords map not found: %s "
+                      "(build it with build_legacy_keywords.py, or blank the "
+                      "setting in photo-intel.conf)", LEGACY_KW_MAP)
+            sys.exit(1)
+        log.info("Legacy keyword map: %s", LEGACY_KW_MAP)
 
     # exportdb must live outside staging — enforce it
     try:
