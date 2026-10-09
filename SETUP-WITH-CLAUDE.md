@@ -184,11 +184,14 @@ Fill in `photo-intel.conf`:
 
 ## Step 4 — Export from Apple Photos (Mac)
 
-Raise the file-descriptor limit first — osxphotos with `--exiftool` forks one
-exiftool per photo and macOS defaults to a low `ulimit` (`Too many open files`):
+`photo_intel_export.py` raises its own file-descriptor limit to 32768 —
+osxphotos with `--exiftool` forks one exiftool per photo, and osxphotos 0.77.x
+also holds a `Photos.sqlite` + `-wal` pair open per photo, so macOS's default
+(256) and even 4096 hit `Too many open files` on large year windows. If you run
+`osxphotos export` by hand instead, raise it in that shell first:
 
 ```bash
-ulimit -n 4096
+ulimit -n 32768
 ```
 
 Then run the export. In local mode this populates `dest_dir`; in split mode it
@@ -338,8 +341,9 @@ library slowly drifting out of sync with no backstop.
 - **Shared-album photos stay on the Mac** (`--not-shared`). Don't disable that — and
   the web app's delete button only removes the *processing host's* copy, never Apple
   Photos.
-- **macOS `ulimit -n`** must be raised (Step 4) or `--exiftool` hits "Too many open
-  files."
+- **macOS `ulimit -n`** must be high — 32768, which `photo_intel_export.py` sets
+  itself (Step 4). At 4096, large windows fail thousands of photos with "Too many
+  open files" / "unable to open database file".
 - **HEIC on Linux** needs `pillow-heif` (in `requirements.txt`); macOS handles HEIC
   natively.
 - **Model swaps require care.** The defaults (`num_predict`, model name) are tuned

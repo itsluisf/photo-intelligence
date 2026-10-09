@@ -168,9 +168,14 @@ def export_window(
         return True
 
     # Raise open-file limit for exiftool's parallel temp-file usage.
-    # macOS default (256) is too low for large exports.
+    # macOS default (256) is too low for large exports. 4096 was too low too:
+    # osxphotos 0.77.x opens a Photos.sqlite + -wal fd pair per photo and only
+    # reclaims them intermittently (about one pair per photo processed so
+    # far), so a year window of several thousand photos hit "Too many open
+    # files". Budget ~2 fds per photo in the largest window;
+    # kern.maxfilesperproc is 61440.
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    target = min(4096, hard)
+    target = min(32768, hard)
     if soft < target:
         resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
         log.info("Raised RLIMIT_NOFILE %d → %d", soft, target)

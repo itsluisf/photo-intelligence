@@ -456,7 +456,7 @@ self-stops at `max_minutes` and warms the Gemma model back in a `finally:`
 block. If the unit's `TimeoutStartSec` is lower, systemd SIGKILLs the run first
 — the warm-back never happens and the unit is left `failed (timeout)`.
 
-**macOS ulimit and exiftool.** Default macOS `ulimit -n` is 256. With `--exiftool`, osxphotos forks one exiftool process per photo and hits `Too many open files` at scale. Raise to `ulimit -n 4096` before running the export.
+**macOS ulimit and exiftool.** Default macOS `ulimit -n` is 256. With `--exiftool`, osxphotos forks one exiftool process per photo and hits `Too many open files` at scale. osxphotos 0.77.x also holds a `Photos.sqlite` + `-wal` descriptor pair open per photo and reclaims them only intermittently, so even 4096 fails thousands of photos in a large year window. `photo_intel_export.py` raises the soft limit to 32768 itself; use `ulimit -n 32768` for a manual `osxphotos export`.
 
 ---
 
